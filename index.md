@@ -225,9 +225,7 @@
             </a>.
         </p>
 
-        <h4>Implemented</h4>
-
-        - test
+        #### Implemented
 
         <ul>
             <li>Transaction management</li>
