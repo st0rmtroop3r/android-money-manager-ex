@@ -227,6 +227,8 @@
 
         <h4>Implemented</h4>
 
+        - test
+
         <ul>
             <li>Transaction management</li>
             <li>Multiple accounts and account types, currencies, and languages.</li>
