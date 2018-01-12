@@ -52,7 +52,7 @@
         android:allowBackup="true"
         android:backupAgent=".core.MoneyManagerBackupAgentHelper"
         android:icon="@mipmap/ic_launcher"
-        android:label="@string/application_name"
+        android:label="@string/apps_name"
         android:theme="@style/Theme.Splash"
         tools:replace="android:label">
         <meta-data
