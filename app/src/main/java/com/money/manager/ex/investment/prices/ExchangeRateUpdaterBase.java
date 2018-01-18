@@ -23,10 +23,9 @@ import android.content.Context;
  * Base class for all exchange rate services.
  */
 
-public class ExchangeRateUpdaterBase
-    extends PriceUpdaterBase {
+public class ExchangeRateUpdaterBase extends PriceUpdaterBase {
+
     public ExchangeRateUpdaterBase(Context context) {
         super(context);
     }
-
 }

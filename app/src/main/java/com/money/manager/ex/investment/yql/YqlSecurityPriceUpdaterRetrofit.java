@@ -22,13 +22,14 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
+import com.money.manager.ex.MmexApplication;
 import com.money.manager.ex.R;
-import com.money.manager.ex.core.UIHelper;
 import com.money.manager.ex.core.NumericHelper;
-import com.money.manager.ex.investment.prices.ISecurityPriceUpdater;
-import com.money.manager.ex.investment.prices.PriceUpdaterBase;
+import com.money.manager.ex.core.UIHelper;
 import com.money.manager.ex.investment.SecurityPriceModel;
 import com.money.manager.ex.investment.events.PriceDownloadedEvent;
+import com.money.manager.ex.investment.prices.ISecurityPriceUpdater;
+import com.money.manager.ex.investment.prices.PriceUpdaterBase;
 import com.money.manager.ex.utils.MmxDate;
 
 import org.greenrobot.eventbus.EventBus;
@@ -37,8 +38,11 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
+import javax.inject.Inject;
+
 import info.javaperformance.money.Money;
 import info.javaperformance.money.MoneyFactory;
+import okhttp3.OkHttpClient;
 import retrofit2.Call;
 import retrofit2.Callback;
 import retrofit2.Response;
@@ -53,12 +57,16 @@ public class YqlSecurityPriceUpdaterRetrofit
     extends PriceUpdaterBase
     implements ISecurityPriceUpdater {
 
+    @Inject
+    OkHttpClient okHttpClient;
+
     /**
      *
      * @param context Executing context
      */
     public YqlSecurityPriceUpdaterRetrofit(Context context) {
         super(context);
+        MmexApplication.getApp().iocComponent.inject(this);
     }
 
     // https://query.yahooapis.com/v1/public/yql
@@ -211,6 +219,7 @@ public class YqlSecurityPriceUpdaterRetrofit
 
         Retrofit retrofit = new Retrofit.Builder()
                 .addConverterFactory(GsonConverterFactory.create())
+                .client(okHttpClient)
                 .baseUrl(BASE_URL)
                 .build();
         return retrofit.create(IYqlService.class);

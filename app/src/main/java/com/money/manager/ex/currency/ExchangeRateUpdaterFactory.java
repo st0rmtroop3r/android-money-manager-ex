@@ -20,11 +20,9 @@ package com.money.manager.ex.currency;
 import android.content.Context;
 
 import com.money.manager.ex.investment.ExchangeRateProviders;
-import com.money.manager.ex.investment.prices.IExchangeRateUpdater;
-import com.money.manager.ex.investment.prices.ISecurityPriceUpdater;
 import com.money.manager.ex.investment.prices.FixerService;
-import com.money.manager.ex.investment.yahoocsv.YahooCsvQuoteDownloaderRetrofit;
-import com.money.manager.ex.investment.yql.YqlSecurityPriceUpdaterRetrofit;
+import com.money.manager.ex.investment.prices.IExchangeRateUpdater;
+import com.money.manager.ex.investment.prices.NbuExchangeRateUpdater;
 import com.money.manager.ex.settings.InvestmentSettings;
 
 /**
@@ -53,8 +51,11 @@ public class ExchangeRateUpdaterFactory {
 //            case YahooCsv:
 //                updater = new YahooCsvQuoteDownloaderRetrofit(context);
 //                break;
+            case NBU:
+                updater = new NbuExchangeRateUpdater(context);
+                break;
             default:
-                updater = new FixerService(context);
+                updater = new NbuExchangeRateUpdater(context);
                 break;
         }
 

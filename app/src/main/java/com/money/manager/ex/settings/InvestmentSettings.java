@@ -90,7 +90,7 @@ public class InvestmentSettings
     }
 
     public ExchangeRateProviders getExchangeRateProvider() {
-        ExchangeRateProviders defaultValue = ExchangeRateProviders.Fixer;
+        ExchangeRateProviders defaultValue = ExchangeRateProviders.NBU;
 
         InfoService service = new InfoService(getContext());
         String value = service.getInfoValue(InfoKeys.EXCHANGE_RATE_PROVIDER);

@@ -24,7 +24,9 @@ import com.money.manager.ex.Constants;
  */
 
 public enum ExchangeRateProviders {
-    Fixer;
+
+    Fixer,
+    NBU;
     // Morningstar
 //    YahooYql,
 //    YahooCsv;

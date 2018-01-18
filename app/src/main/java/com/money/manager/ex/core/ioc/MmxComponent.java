@@ -32,11 +32,13 @@ import com.money.manager.ex.home.HomeFragment;
 import com.money.manager.ex.home.MainActivity;
 import com.money.manager.ex.home.SelectDatabaseActivity;
 import com.money.manager.ex.investment.EditPriceDialog;
-import com.money.manager.ex.investment.prices.ISecurityPriceUpdater;
 import com.money.manager.ex.investment.InvestmentTransactionEditActivity;
 import com.money.manager.ex.investment.PriceEditActivity;
 import com.money.manager.ex.investment.PriceEditModel;
 import com.money.manager.ex.investment.morningstar.MorningstarPriceUpdater;
+import com.money.manager.ex.investment.prices.FixerService;
+import com.money.manager.ex.investment.prices.ISecurityPriceUpdater;
+import com.money.manager.ex.investment.prices.NbuExchangeRateUpdater;
 import com.money.manager.ex.recurring.transactions.RecurringTransactionEditActivity;
 import com.money.manager.ex.recurring.transactions.RecurringTransactionListFragment;
 import com.money.manager.ex.reports.BaseReportFragment;
@@ -103,6 +105,8 @@ public interface MmxComponent {
     void inject(SyncServiceMessageHandler handler);
     void inject(Passcode object);
     void inject(EditTransactionCommonFunctions object);
+    void inject(FixerService fixerService);
+    void inject(NbuExchangeRateUpdater nbuExchangeRateUpdater);
 
     // Helpers
     void inject(UIHelper helper);

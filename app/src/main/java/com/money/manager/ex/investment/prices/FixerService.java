@@ -20,10 +20,10 @@ package com.money.manager.ex.investment.prices;
 import android.content.Context;
 import android.widget.Toast;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
+import com.money.manager.ex.MmexApplication;
 import com.money.manager.ex.R;
 import com.money.manager.ex.core.NumericHelper;
 import com.money.manager.ex.core.UIHelper;
@@ -42,14 +42,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import javax.inject.Inject;
+
 import info.javaperformance.money.Money;
 import info.javaperformance.money.MoneyFactory;
+import okhttp3.OkHttpClient;
 import retrofit2.Call;
 import retrofit2.Callback;
 import retrofit2.Response;
 import retrofit2.Retrofit;
 import retrofit2.converter.gson.GsonConverterFactory;
-import retrofit2.converter.scalars.ScalarsConverterFactory;
 import timber.log.Timber;
 
 /**
@@ -61,8 +63,12 @@ public class FixerService
     extends PriceUpdaterBase
     implements IExchangeRateUpdater {
 
+    @Inject
+    OkHttpClient okHttpClient;
+
     public FixerService(Context context) {
         super(context);
+        MmexApplication.getApp().iocComponent.inject(this);
     }
 
     @Override
@@ -126,7 +132,7 @@ public class FixerService
 
         // Notify the user of the prices that have been downloaded.
         String message = getContext().getString(R.string.download_complete) +
-            " (" + updatedCurrencies.toString().substring(0, updatedCurrencies.toString().length() - 1) + ")";
+            " (" + updatedCurrencies.toString() + ")";
         uiHelper.showToast(message, Toast.LENGTH_LONG);
     }
 
@@ -135,6 +141,7 @@ public class FixerService
         Retrofit retrofit = new Retrofit.Builder()
                 .addConverterFactory(GsonConverterFactory.create())
                 .baseUrl(BASE_URL)
+                .client(okHttpClient)
                 .build();
         return retrofit.create(IFixerService.class);
     }

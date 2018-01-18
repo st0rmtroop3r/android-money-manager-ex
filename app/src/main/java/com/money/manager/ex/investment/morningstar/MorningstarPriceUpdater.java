@@ -24,10 +24,10 @@ import com.money.manager.ex.R;
 import com.money.manager.ex.core.UIHelper;
 import com.money.manager.ex.datalayer.StockHistoryRepositorySql;
 import com.money.manager.ex.datalayer.StockRepositorySql;
-import com.money.manager.ex.investment.prices.ISecurityPriceUpdater;
-import com.money.manager.ex.investment.prices.PriceUpdaterBase;
 import com.money.manager.ex.investment.events.AllPricesDownloadedEvent;
 import com.money.manager.ex.investment.events.PriceDownloadedEvent;
+import com.money.manager.ex.investment.prices.ISecurityPriceUpdater;
+import com.money.manager.ex.investment.prices.PriceUpdaterBase;
 import com.money.manager.ex.utils.MmxDate;
 import com.squareup.sqlbrite.BriteDatabase;
 
@@ -43,6 +43,7 @@ import javax.inject.Inject;
 import dagger.Lazy;
 import info.javaperformance.money.Money;
 import info.javaperformance.money.MoneyFactory;
+import okhttp3.OkHttpClient;
 import retrofit2.Retrofit;
 import retrofit2.adapter.rxjava.RxJavaCallAdapterFactory;
 import retrofit2.converter.scalars.ScalarsConverterFactory;
@@ -61,6 +62,9 @@ import timber.log.Timber;
 public class MorningstarPriceUpdater
     extends PriceUpdaterBase
     implements ISecurityPriceUpdater {
+
+    @Inject
+    OkHttpClient okHttpClient;
 
     @Inject
     public MorningstarPriceUpdater(Context context) {
@@ -297,6 +301,7 @@ public class MorningstarPriceUpdater
         Retrofit retrofit = new Retrofit.Builder()
                 .addConverterFactory(ScalarsConverterFactory.create())
                 .addCallAdapterFactory(RxJavaCallAdapterFactory.create())
+                .client(okHttpClient)
                 .baseUrl(BASE_URL)
                 .build();
         return retrofit.create(IMorningstarService.class);

@@ -19,18 +19,22 @@ package com.money.manager.ex.investment.yahoocsv;
 
 import android.content.Context;
 
+import com.money.manager.ex.MmexApplication;
 import com.money.manager.ex.R;
 import com.money.manager.ex.core.UIHelper;
-import com.money.manager.ex.investment.prices.ISecurityPriceUpdater;
 import com.money.manager.ex.investment.PriceCsvParser;
-import com.money.manager.ex.investment.prices.PriceUpdaterBase;
 import com.money.manager.ex.investment.events.AllPricesDownloadedEvent;
 import com.money.manager.ex.investment.events.PriceDownloadedEvent;
+import com.money.manager.ex.investment.prices.ISecurityPriceUpdater;
+import com.money.manager.ex.investment.prices.PriceUpdaterBase;
 
 import org.greenrobot.eventbus.EventBus;
 
 import java.util.List;
 
+import javax.inject.Inject;
+
+import okhttp3.OkHttpClient;
 import retrofit2.Call;
 import retrofit2.Callback;
 import retrofit2.Response;
@@ -51,8 +55,12 @@ public class YahooCsvQuoteDownloaderRetrofit
     private int mCounter;
     private int mTotalRecords;
 
+    @Inject
+    OkHttpClient okHttpClient;
+
     public YahooCsvQuoteDownloaderRetrofit(Context context) {
         super(context);
+        MmexApplication.getApp().iocComponent.inject(this);
     }
 
     @Override
@@ -131,6 +139,7 @@ public class YahooCsvQuoteDownloaderRetrofit
         String BASE_URL = "https://download.finance.yahoo.com";
         Retrofit retrofit = new Retrofit.Builder()
                 .addConverterFactory(ScalarsConverterFactory.create())
+                .client(okHttpClient)
                 .baseUrl(BASE_URL)
                 .build();
         return retrofit.create(IYahooCsvService.class);

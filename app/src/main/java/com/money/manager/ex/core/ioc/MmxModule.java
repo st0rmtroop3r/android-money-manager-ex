@@ -22,7 +22,6 @@ import android.content.SharedPreferences;
 import android.preference.PreferenceManager;
 
 import com.money.manager.ex.MmexApplication;
-import com.money.manager.ex.MmexApplication;
 import com.money.manager.ex.settings.AppSettings;
 
 import javax.inject.Singleton;
@@ -38,7 +37,8 @@ import dagger.Provides;
 @Module(
     includes = {
         DbModule.class,
-        RepositoryModule.class
+        RepositoryModule.class,
+        NetworkModule.class
     }
 )
 public final class MmxModule {

@@ -33,7 +33,6 @@ import com.money.manager.ex.core.UIHelper;
 import com.money.manager.ex.currency.events.CurrencyDeletionConfirmedEvent;
 import com.money.manager.ex.currency.events.ExchangeRateUpdateConfirmedEvent;
 import com.money.manager.ex.utils.DialogUtils;
-import com.shamanland.fonticon.FontIconDrawable;
 
 import org.greenrobot.eventbus.EventBus;
 
@@ -91,21 +90,23 @@ public class CurrencyUIFeatures {
      */
     public boolean onPriceDownloaded(String symbol, Money price, Date date) {
         // extract destination currency
-        String baseCurrencyCode = getService().getBaseCurrencyCode();
-        String destinationCurrency = symbol.replace(baseCurrencyCode, "");
-        destinationCurrency = destinationCurrency.replace("=X", "");
+
+        // commented because it prevents saving base currency rate
+//        String baseCurrencyCode = getService().getBaseCurrencyCode();
+//        String destinationCurrency = symbol.replace(baseCurrencyCode, "");
+//        destinationCurrency = destinationCurrency.replace("=X", "");
         boolean success = false;
 
         try {
             // update exchange rate.
-            success = getService().saveExchangeRate(destinationCurrency, price);
+            success = getService().saveExchangeRate(symbol, price);
         } catch (Exception ex) {
             Timber.e(ex, "saving exchange rate");
         }
 
         if (!success) {
             String message = getContext().getString(R.string.error_update_currency_exchange_rate);
-            message += " " + destinationCurrency;
+            message += " " + symbol;
 
             Toast.makeText(getContext(), message, Toast.LENGTH_SHORT).show();
         }
