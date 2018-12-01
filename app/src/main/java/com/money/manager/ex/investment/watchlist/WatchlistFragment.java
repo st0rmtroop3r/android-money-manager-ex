@@ -40,29 +40,26 @@ import android.widget.Toast;
 
 import com.afollestad.materialdialogs.DialogAction;
 import com.afollestad.materialdialogs.MaterialDialog;
-import com.crashlytics.android.answers.Answers;
-import com.crashlytics.android.answers.CustomEvent;
 import com.mikepenz.fontawesome_typeface_library.FontAwesome;
 import com.mikepenz.google_material_typeface_library.GoogleMaterial;
 import com.mikepenz.iconics.IconicsDrawable;
 import com.money.manager.ex.Constants;
-import com.money.manager.ex.account.AccountEditActivity;
 import com.money.manager.ex.R;
-import com.money.manager.ex.core.AnswersEvents;
+import com.money.manager.ex.account.AccountEditActivity;
 import com.money.manager.ex.core.UIHelper;
 import com.money.manager.ex.datalayer.AccountRepository;
 import com.money.manager.ex.datalayer.StockFields;
 import com.money.manager.ex.datalayer.StockHistoryRepository;
-import com.money.manager.ex.log.ErrorRaisedEvent;
 import com.money.manager.ex.datalayer.StockRepository;
 import com.money.manager.ex.domainmodel.Account;
-import com.money.manager.ex.investment.prices.ISecurityPriceUpdater;
 import com.money.manager.ex.investment.PriceCsvExport;
 import com.money.manager.ex.investment.QuoteProviders;
 import com.money.manager.ex.investment.SecurityPriceUpdaterFactory;
 import com.money.manager.ex.investment.events.AllPricesDownloadedEvent;
 import com.money.manager.ex.investment.events.PriceDownloadedEvent;
 import com.money.manager.ex.investment.events.PriceUpdateRequestEvent;
+import com.money.manager.ex.investment.prices.ISecurityPriceUpdater;
+import com.money.manager.ex.log.ErrorRaisedEvent;
 import com.money.manager.ex.servicelayer.AccountService;
 import com.money.manager.ex.settings.InvestmentSettings;
 import com.money.manager.ex.sync.SyncManager;
@@ -126,8 +123,6 @@ public class WatchlistFragment
         }
 
         mUpdateCounter = 0;
-
-        Answers.getInstance().logCustom(new CustomEvent(AnswersEvents.Watchlist.name()));
     }
 
     @Override

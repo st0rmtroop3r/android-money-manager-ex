@@ -27,15 +27,12 @@ import android.support.v7.widget.Toolbar;
 import android.view.Menu;
 import android.view.MenuItem;
 
-import com.crashlytics.android.answers.Answers;
-import com.crashlytics.android.answers.CustomEvent;
 import com.mikepenz.google_material_typeface_library.GoogleMaterial;
 import com.mikepenz.iconics.IconicsDrawable;
 import com.money.manager.ex.R;
-import com.money.manager.ex.assetallocation.editor.AssetAllocationEditorActivity;
 import com.money.manager.ex.assetallocation.ItemType;
+import com.money.manager.ex.assetallocation.editor.AssetAllocationEditorActivity;
 import com.money.manager.ex.common.MmxBaseFragmentActivity;
-import com.money.manager.ex.core.AnswersEvents;
 import com.money.manager.ex.core.FormatUtilities;
 import com.money.manager.ex.core.MenuHelper;
 import com.money.manager.ex.core.UIHelper;
@@ -63,8 +60,6 @@ public class AssetAllocationOverviewActivity
 
         // Toolbar
         setUpToolbar();
-
-        Answers.getInstance().logCustom(new CustomEvent(AnswersEvents.AssetAllocationOverview.name()));
     }
 
     @Override

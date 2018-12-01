@@ -16,9 +16,9 @@
  */
 package com.money.manager.ex.assetallocation.editor;
 
+import android.app.Activity;
 import android.content.Intent;
 import android.os.Bundle;
-import android.app.Activity;
 import android.os.Handler;
 import android.os.Looper;
 import android.support.v4.app.Fragment;
@@ -30,8 +30,6 @@ import android.support.v7.widget.Toolbar;
 import android.view.Menu;
 import android.view.MenuItem;
 
-import com.crashlytics.android.answers.Answers;
-import com.crashlytics.android.answers.CustomEvent;
 import com.mikepenz.google_material_typeface_library.GoogleMaterial;
 import com.mikepenz.iconics.IconicsDrawable;
 import com.money.manager.ex.R;
@@ -44,9 +42,8 @@ import com.money.manager.ex.assetallocation.events.AssetClassSelectedEvent;
 import com.money.manager.ex.common.MmxBaseFragmentActivity;
 import com.money.manager.ex.core.NumericHelper;
 import com.money.manager.ex.core.UIHelper;
-import com.money.manager.ex.core.AnswersEvents;
-import com.money.manager.ex.currency.list.CurrencyListActivity;
 import com.money.manager.ex.currency.CurrencyService;
+import com.money.manager.ex.currency.list.CurrencyListActivity;
 import com.money.manager.ex.domainmodel.AssetClass;
 import com.money.manager.ex.servicelayer.AssetAllocationService;
 
@@ -92,8 +89,6 @@ public class AssetAllocationEditorActivity
             mLoaderCallbacks = setUpLoaderCallbacks();
             getSupportLoaderManager().initLoader(LOADER_ASSET_ALLOCATION, null, mLoaderCallbacks);
         }
-
-        Answers.getInstance().logCustom(new CustomEvent(AnswersEvents.AssetAllocation.name()));
     }
 
     @Override

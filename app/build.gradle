@@ -190,6 +190,8 @@ dependencies {
             , 'com.squareup.retrofit2:converter-gson:2.4.0'
             , 'com.squareup.retrofit2:converter-scalars:2.4.0'
             , 'com.squareup.retrofit2:adapter-rxjava:2.4.0'
+            , 'com.squareup.okhttp3:logging-interceptor:3.6.0'
+            , 'com.squareup.okhttp3:okhttp:3.6.0'
             // ,'net.zetetic:android-database-sqlcipher:3.4.0'   // database encryption
             , 'org.greenrobot:eventbus:3.0.0'
             , 'io.github.luizgrp.sectionedrecyclerviewadapter:sectionedrecyclerviewadapter:1.0.4'
@@ -305,7 +307,7 @@ static def getVersionAsDate() {
     See https://github.com/plastiv/CrashlyticsDemo
  */
 afterEvaluate {
-    initFabricPropertiesIfNeeded()
+//    initFabricPropertiesIfNeeded()
 }
 
 def initFabricPropertiesIfNeeded() {
