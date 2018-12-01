@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2017 The Android Money Manager Ex Project Team
+ * Copyright (C) 2012-2018 The Android Money Manager Ex Project Team
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -29,7 +29,6 @@ import com.crashlytics.android.Crashlytics;
 import com.crashlytics.android.core.CrashlyticsCore;
 import com.evernote.android.job.JobManager;
 import com.mikepenz.iconics.Iconics;
-import com.mikepenz.iconics.context.IconicsContextWrapper;
 import com.mikepenz.mmex_icon_font_typeface_library.MMXIconFont;
 import com.money.manager.ex.common.MoneyParcelConverter;
 import com.money.manager.ex.core.InfoKeys;
@@ -165,10 +164,12 @@ public class MmexApplication
         registerCustomFonts();
 
         // Exception reporting. Disabled for debug builds.
-        Crashlytics crashlyticsKit = new Crashlytics.Builder()
-                .core(new CrashlyticsCore.Builder().disabled(BuildConfig.DEBUG).build())
-                .build();
-        Fabric.with(this, crashlyticsKit); // new Crashlytics()
+        if (BuildConfig.USE_CRASHLYTICS) {
+            Crashlytics crashlyticsKit = new Crashlytics.Builder()
+                    .core(new CrashlyticsCore.Builder().disabled(BuildConfig.DEBUG).build())
+                    .build();
+            Fabric.with(this, crashlyticsKit); // new Crashlytics()
+        }
 
         // Loggers
         if (BuildConfig.DEBUG) {
@@ -181,6 +182,10 @@ public class MmexApplication
 
         // Job Manager initialization.
         initializeJobManager();
+
+//        if (! Python.isStarted()) {
+//            Python.start(new AndroidPlatform(this));
+//        }
     }
 
     /**

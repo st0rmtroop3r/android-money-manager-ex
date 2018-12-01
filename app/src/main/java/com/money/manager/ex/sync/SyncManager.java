@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2017 The Android Money Manager Ex Project Team
+ * Copyright (C) 2012-2018 The Android Money Manager Ex Project Team
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -501,7 +501,8 @@ public class SyncManager {
 
         // Transfer the file.
         try {
-            mStorageClient.upload(remoteFile, input, localFile.length(), true);
+            long length = localFile.length();
+            mStorageClient.upload(remoteFile, input, length, true);
         } catch (Exception e) {
             Timber.e(e, "uploading database file");
             return false;

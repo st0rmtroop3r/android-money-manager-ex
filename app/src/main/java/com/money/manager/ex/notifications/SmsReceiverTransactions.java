@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2017 The Android Money Manager Ex Project Team
+ * Copyright (C) 2012-2018 The Android Money Manager Ex Project Team
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -60,6 +60,7 @@ import com.money.manager.ex.transactions.CheckingTransactionEditActivity;
 import com.money.manager.ex.transactions.EditTransactionActivityConstants;
 import com.money.manager.ex.transactions.EditTransactionCommonFunctions;
 import com.money.manager.ex.utils.MmxDate;
+import com.money.manager.ex.utils.NotificationUtils;
 import com.squareup.sqlbrite.BriteDatabase;
 
 import javax.inject.Inject;
@@ -83,6 +84,12 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
     public static MmxOpenHelper MmxHelper;
     public static SQLiteDatabase db;
 
+    static String[] fromAccountDetails;
+    static String[] toAccountDetails;
+
+    public static String CHANNEL_ID = "SmsTransaction_NotificationChannel";
+    private static final int ID_NOTIFICATION = 0x000A;
+
     @Override
     public void onReceive(Context context, Intent intent) {
         mContext = context.getApplicationContext();
@@ -95,10 +102,12 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
         //App Settings
         int baseCurencyID, fromCurrencyID, toCurrencyID;
         int baseAccountID, fromAccountID, toAccountID;
+
         String baseCurrencySymbl, fromAccCurrencySymbl, toAccCurrencySymbl;
         String baseAccountName, fromAccountName, toAccountName;
 
         Boolean autoTransactionStatus = false;
+        Boolean skipSaveTrans = false;
 
         try {
             //------- if settings enabled the parse the sms and create trans ---------------
@@ -110,8 +119,8 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
                 String msgBody = "";
                 String msgSender = "";
 
-                if (bundle != null) {
-                    //---retrieve the SMS message received---
+                if (bundle != null) { //---retrieve the SMS message received---
+
                     Object[] pdus = (Object[]) bundle.get("pdus");
                     msgs = new SmsMessage[pdus.length];
 
@@ -121,255 +130,332 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
                         msgBody += msgs[i].getMessageBody().toString();
                     }
 
-                    ITransactionEntity model = AccountTransaction.create();
-                    mCommon = new EditTransactionCommonFunctions(null, model, database);
+                    //msgSender = "AT-SIBSMS";
 
-                    // find out the trans type using reg ex
-                    String[] key_credit_search = {"(credited)", "(received)", "(added)", "(reloaded)", "(deposited)"};
-                    String[] key_debit_search = {"(made)", "(debited)", "(using)", "(paid)", "(purchase)", "(withdrawn)"};
-                    String transType = "";
+                    if(isTransactionSms(msgSender)) {
+                        // Transaction Sms sender will have format like this AT-SIBSMS,
+                        // Promotional sms will have sender like AT-012345
+                        // Not sure how this format will be in out side of India. I may need to update if I get sample
 
-                    Boolean isDeposit = validateTransType(key_credit_search, msgBody.toLowerCase());
-                    Boolean isWithdrawal = validateTransType(key_debit_search, msgBody.toLowerCase());
+                        ITransactionEntity model = AccountTransaction.create();
+                        mCommon = new EditTransactionCommonFunctions(null, model, database);
 
-                    if (isDeposit == true) {
-                        if (isWithdrawal == true) {
+                        // find out the trans type using reg ex
+                        String[] key_credit_search = {"(credited)", "(received)", "(added)", "(reloaded)", "(deposited)", "(refunded)",
+                                "(debited)(.*?)(towards)(\\s)", "(\\s)(received)(.*?)(in(\\s)your)(\\s)", "(sent)(.*?)(to)(\\s)", "(debited)(.*?)(to)(\\s)",
+                                "(credited)(.*?)(in)(\\s)", "(credited)(.*?)(to)(\\s)"};
 
-                            transType = "Transfer";
-                            String[] transCategory = getCategoryOrSubCategoryByName("Transfer");
+                        // - Sales Draft added for LBP currency. Request from HussienH
+                        String[] key_debit_search = {"(made)", "(debited)", "(using)", "(paid)", "(purchase)", "(withdrawn)", "(done)",
+                                "(credited)(.*?)(from)(\\s)", "(sent)(.*?)(from)(\\s)", "(\\s)(received)(.*?)(from)(\\s)",
+                                "(Sales\\sDraft)"}; //
 
-                            if (!transCategory[0].isEmpty()) {
-                                mCommon.transactionEntity.setCategoryId(parseInt(transCategory[0]));
+                        String transType = "";
+
+                        //Handle the string
+                        msgBody = msgBody.replaceAll("[\\t\\n\\r]+"," ");
+                        msgBody = msgBody.replaceAll("  "," ");
+
+                        Boolean isDeposit = validateTransType(key_credit_search, msgBody.toLowerCase());
+                        Boolean isWithdrawal = validateTransType(key_debit_search, msgBody.toLowerCase());
+
+                        if (isDeposit == true)
+                        {
+                            if (isWithdrawal == true)
+                            {
+                                transType = "Transfer";
+                                String[] transCategory = getCategoryOrSubCategoryByName("Transfer");
+
+                                if (!transCategory[0].isEmpty()) {
+                                    mCommon.transactionEntity.setCategoryId(parseInt(transCategory[0]));
+                                }
+
+                                if (!transCategory[1].isEmpty()) {
+                                    mCommon.transactionEntity.setSubcategoryId(parseInt(transCategory[1]));
+                                }
+
+                                mCommon.transactionEntity.setTransactionType(TransactionTypes.Transfer);
+
+                            } else {
+                                transType = "Deposit";
+                                String[] incomeCategory = getCategoryOrSubCategoryByName("Income");
+
+                                if (!incomeCategory[0].isEmpty()) {
+                                    mCommon.transactionEntity.setCategoryId(parseInt(incomeCategory[0]));
+                                }
+
+                                if (!incomeCategory[1].isEmpty()) {
+                                    mCommon.transactionEntity.setSubcategoryId(parseInt(incomeCategory[1]));
+                                }
+
+                                mCommon.transactionEntity.setTransactionType(TransactionTypes.Deposit);
                             }
 
-                            if (!transCategory[1].isEmpty()) {
-                                mCommon.transactionEntity.setSubcategoryId(parseInt(transCategory[1]));
-                            }
-
-                            mCommon.transactionEntity.setTransactionType(TransactionTypes.Transfer);
-
-                        } else {
-                            transType = "Deposit";
-                            String[] incomeCategory = getCategoryOrSubCategoryByName("Income");
-
-                            if (!incomeCategory[0].isEmpty()) {
-                                mCommon.transactionEntity.setCategoryId(parseInt(incomeCategory[0]));
-                            }
-
-                            if (!incomeCategory[1].isEmpty()) {
-                                mCommon.transactionEntity.setSubcategoryId(parseInt(incomeCategory[1]));
-                            }
-
-                            mCommon.transactionEntity.setTransactionType(TransactionTypes.Deposit);
+                        } else if (isWithdrawal == true) {
+                            transType = "Withdrawal";
+                            mCommon.transactionEntity.setTransactionType(TransactionTypes.Withdrawal);
                         }
 
+                        mCommon.transactionEntity.setStatus("");
                         mCommon.payeeName = "";
 
-                    } else if (isWithdrawal == true) {
-                        transType = "Withdrawal";
-                        mCommon.transactionEntity.setTransactionType(TransactionTypes.Withdrawal);
-                    }
+                        if (transType != "" && msgBody.toLowerCase().contains("otp") == false) { // if not from blank, then nothing to do with sms
 
-                    mCommon.transactionEntity.setStatus("");
+                            //Create the intent that’ll fire when the user taps the notification//
+                            Intent t_intent = new Intent(mContext, CheckingTransactionEditActivity.class);
 
-                    if (transType != "" && msgBody.toLowerCase().contains("otp") == false) { // if not from blank, then nothing to do with sms
+                            // Db setup
+                            MmxHelper = new MmxOpenHelper(mContext, app_settings.getDatabaseSettings().getDatabasePath());
+                            db = MmxHelper.getReadableDatabase();
 
-                        //Create the intent that’ll fire when the user taps the notification//
-                        Intent t_intent = new Intent(mContext, CheckingTransactionEditActivity.class);
+                            baseCurencyID = gen_settings.getBaseCurrencytId();
+                            baseAccountID = gen_settings.getDefaultAccountId();
+                            baseAccountName = "";
+                            fromAccountID = -1;
+                            fromCurrencyID = -1;
+                            fromAccountName = "";
 
-                        // Db setup
-                        MmxHelper = new MmxOpenHelper(mContext, app_settings.getDatabaseSettings().getDatabasePath());
-                        db = MmxHelper.getReadableDatabase();
+                            //if default account id selected
+                            if (baseAccountID > 0) {
+                                fromAccountID = baseAccountID;
+                                fromAccountName = baseAccountName;
+                                fromCurrencyID = baseCurencyID;
+                            }
 
-                        baseCurencyID = gen_settings.getBaseCurrencytId();
-                        baseAccountID = gen_settings.getDefaultAccountId();
-                        baseAccountName = "";
-                        fromAccountID = -1;
-                        fromCurrencyID = -1;
-                        fromAccountName = "";
+                            //Get the base currency sysmbl
+                            baseCurrencySymbl = getCurrencySymbl(baseCurencyID);
+                            fromAccCurrencySymbl = baseCurrencySymbl;
 
-                        //if default account id selected
-                        if (baseAccountID > 0) {
-                            fromAccountID = baseAccountID;
-                            fromAccountName = baseAccountName;
-                            fromCurrencyID = baseCurencyID;
-                        }
+                            //get te from acount details
+                            extractAccountDetails(msgBody, transType);
 
-                        //Get the base currency sysmbl
-                        baseCurrencySymbl = getCurrencySymbl(baseCurencyID);
-                        fromAccCurrencySymbl = baseCurrencySymbl;
+                            if (!fromAccountDetails[0].isEmpty()) {
+                                fromAccountID = parseInt(fromAccountDetails[0]);
+                                fromAccountName = fromAccountDetails[1];
+                                fromCurrencyID = parseInt(fromAccountDetails[2]);
+                                fromAccCurrencySymbl = fromAccountDetails[3];
+                                mCommon.transactionEntity.setAccountId(fromAccountID);
+                            }
 
-                        //get te from acount details
-                        String[] fromAccountDetails = extractAccountDetails(msgBody, 1);
+                            mCommon.transactionEntity.setNotes(msgBody);
+                            mCommon.transactionEntity.setDate(new MmxDate().toDate());
 
-                        if (!fromAccountDetails[0].isEmpty()) {
-                            fromAccountID = parseInt(fromAccountDetails[0]);
-                            fromAccountName = fromAccountDetails[1];
-                            fromCurrencyID = parseInt(fromAccountDetails[2]);
-                            fromAccCurrencySymbl = fromAccountDetails[3];
-                            mCommon.transactionEntity.setAccountId(fromAccountID);
-                        }
-
-                        mCommon.transactionEntity.setNotes(msgBody);
-                        mCommon.transactionEntity.setDate(new MmxDate().toDate());
-
-                        //get the trans amount
-                        String transAmount = extractTransAmount(msgBody, fromAccCurrencySymbl);
-
-                        //If there is no account no in the msg & no amt, then this is not valid sms to do transaction
-                        if (!fromAccountDetails[6].isEmpty() && !transAmount.isEmpty()) {
-                            mCommon.transactionEntity.setAmount(MoneyFactory.fromString(transAmount));
-
+                            //get the trans amount
+                            String transAmount = extractTransAmount(0, msgBody, fromAccCurrencySymbl);
+                            String balanceAmount = extractTransAmount(1, msgBody, fromAccCurrencySymbl);
                             String[] transPayee = extractTransPayee(msgBody);
-                            String transRefNo = extractTransRefNo(msgBody);
 
-                            int txnId = getTxnId(transRefNo.trim(), transType, mCommon.transactionEntity.getDateString());
+                            //If there is no account no. or payee in the msg & no amt, then this is not valid sms to do transaction
+                            if ((!fromAccountDetails[6].isEmpty() || !toAccountDetails[6].isEmpty() ||
+                                    !transPayee[0].isEmpty()) && !transAmount.isEmpty()) {
 
-                            switch (txnId) {
-                                case 0: //add new trnsaction
-                                    //if it is transfer
-                                    if (transType == "Transfer")
-                                    {
-                                        //get the to account details
-                                        String[] toAccountDetails = extractAccountDetails(msgBody, 2);
+                                mCommon.transactionEntity.setAmount(MoneyFactory.fromString(transAmount));
 
-                                        if (!toAccountDetails[0].isEmpty()) // if id exists then considering as account transfer
+                                String transRefNo = extractTransRefNo(msgBody);
+
+                                //set the ref no. if exists
+                                if(!transRefNo.isEmpty()){
+                                    mCommon.transactionEntity.setTransactionNumber(transRefNo);
+                                }
+
+                                int txnId = getTxnId(transRefNo.trim(), mCommon.transactionEntity.getDateString());
+
+                                switch (txnId)
+                                {
+                                    case 0: //add new trnsaction
+
+                                        if (transType == "Transfer") //if it is transfer
                                         {
-                                            toAccountID = parseInt(toAccountDetails[0]);
-                                            toAccountName = toAccountDetails[1];
-                                            toCurrencyID = parseInt(toAccountDetails[2]);
-                                            toAccCurrencySymbl = toAccountDetails[3];
+                                            if (!toAccountDetails[0].isEmpty()) // if id exists then considering as account transfer
+                                            {
+                                                toAccountID = parseInt(toAccountDetails[0]);
+                                                toAccountName = toAccountDetails[1];
+                                                toCurrencyID = parseInt(toAccountDetails[2]);
+                                                toAccCurrencySymbl = toAccountDetails[3];
 
-                                            mCommon.transactionEntity.setAccountToId(toAccountID);
+                                                mCommon.transactionEntity.setAccountToId(toAccountID);
 
-                                            //convert the to amount from the both currency details
-                                            CurrencyService currencyService = new CurrencyService(mContext);
-                                            mCommon.transactionEntity.setAmountTo(currencyService.doCurrencyExchange(fromCurrencyID,
-                                                    mCommon.transactionEntity.getAmount(),
-                                                    toCurrencyID));
+                                                //convert the to amount from the both currency details
+                                                CurrencyService currencyService = new CurrencyService(mContext);
+                                                mCommon.transactionEntity.setAmountTo(currencyService.doCurrencyExchange(fromCurrencyID,
+                                                        mCommon.transactionEntity.getAmount(),
+                                                        toCurrencyID));
 
-                                            mCommon.transactionEntity.setPayeeId(Constants.NOT_SET);
+                                                mCommon.transactionEntity.setPayeeId(Constants.NOT_SET);
 
-                                        } else { // if not, then IMPS transfer tp 3rd party
+                                            } else { // if not, then may be IMPS transfer to 3rd party
+
+                                                //if there is no to account found from mmex db, then check for payee
+                                                //This will helps me to handle 3rd party transfer thru IMPS
+                                                if (!toAccountDetails[6].isEmpty() && transPayee[0].isEmpty()) {
+                                                    transPayee = getPayeeDetails(toAccountDetails[6].trim());
+                                                }
+                                            }
+                                        }
+
+                                        if (!transPayee[0].isEmpty()) {
 
                                             transType = "Withdrawal";
+
                                             mCommon.transactionEntity.setTransactionType(TransactionTypes.Withdrawal);
                                             mCommon.transactionEntity.setAccountToId(Constants.NOT_SET);
                                             mCommon.transactionEntity.setAmountTo(MoneyFactory.fromString(transAmount));
 
-                                            //if there is no to account found from mmex db, then check for payee
-                                            //This will helps me to handle 3rd party transfer thru IMPS
-                                            if (!toAccountDetails[6].isEmpty() && transPayee[0].isEmpty()) {
-                                                transPayee = getPayeeDetails(toAccountDetails[6].trim());
+                                            mCommon.transactionEntity.setPayeeId(parseInt(transPayee[0]));
+                                            mCommon.payeeName = transPayee[1];
+                                            mCommon.transactionEntity.setCategoryId(parseInt(transPayee[2]));
+                                            mCommon.transactionEntity.setSubcategoryId(parseInt(transPayee[3]));
+                                        }
+
+                                        t_intent.setAction(Intent.ACTION_INSERT); //Set the action
+
+                                        break;
+
+                                    default: //Update existing transaction
+
+                                        transType = "Transfer";
+
+                                        AccountTransactionRepository repo = new AccountTransactionRepository(mContext);
+                                        AccountTransaction txn = repo.load(txnId);
+
+                                        if (txn != null) {
+
+                                            if (txn.getTransactionType() != TransactionTypes.Transfer) {
+
+                                                AccountRepository accountRepository = new AccountRepository(mContext);
+
+                                                if(txn.getTransactionType() == TransactionTypes.Deposit)
+                                                {
+                                                    toAccountID = txn.getAccountId();
+                                                    toCurrencyID = accountRepository.loadCurrencyIdFor(txn.getAccountId());
+                                                }
+                                                else
+                                                {
+                                                    toAccountID = fromAccountID;
+                                                    toCurrencyID = fromCurrencyID;
+                                                    fromCurrencyID = accountRepository.loadCurrencyIdFor(txn.getAccountId());
+                                                }
+
+                                                mCommon.transactionEntity = txn;
+                                                mCommon.transactionEntity.setTransactionType(TransactionTypes.Transfer);
+                                                mCommon.transactionEntity.setAccountId(fromAccountID);
+                                                mCommon.transactionEntity.setAccountToId(toAccountID);
+
+                                                //convert the to amount from the both currency details
+                                                CurrencyService currencyService = new CurrencyService(mContext);
+                                                mCommon.transactionEntity.setAmountTo(currencyService.doCurrencyExchange(fromCurrencyID,
+                                                        mCommon.transactionEntity.getAmount(),
+                                                        toCurrencyID));
+
+                                                mCommon.transactionEntity.setPayeeId(Constants.NOT_SET);
+
+                                                String[] transCategory = getCategoryOrSubCategoryByName("Transfer");
+                                                if (!transCategory[0].isEmpty()) {
+                                                    mCommon.transactionEntity.setCategoryId(parseInt(transCategory[0]));
+                                                    mCommon.transactionEntity.setSubcategoryId(parseInt(transCategory[1]));
+                                                }
+
+                                                mCommon.transactionEntity.setNotes(mCommon.transactionEntity.getNotes() + "\n\n" + msgBody);
+
+                                                t_intent.setAction(Intent.ACTION_EDIT); //Set the action
+                                            }
+                                            else //if transfer already exists, then do nothing
+                                            {
+                                                mCommon.transactionEntity = txn;
+                                                t_intent.setAction(Intent.ACTION_EDIT); //Set the action
+
+                                                skipSaveTrans = true;
+                                            }
+
+                                        }
+
+                                }
+
+                                // Capture the details the for Toast
+                                String strExtracted = "Account = " + fromAccountName + "-" + fromAccountDetails[6] + "\n"
+                                        + "Trans Amt = " + fromAccCurrencySymbl + " " + transAmount + ",\n"
+                                        + "Payyee Name= " + transPayee[1] + "\n"
+                                        + "Category ID = " + transPayee[2] + "\n"
+                                        + "Sub Category ID = " + transPayee[3] + "\n"
+                                        + "Trans Ref No. = " + transRefNo + "\n"
+                                        + "Trans Type = " + transType + "\n";
+
+                                //Must be commented for released version
+                                //mCommon.transactionEntity.setNotes(strExtracted);
+
+                                // Set the content for a transaction);
+                                t_intent.putExtra(EditTransactionActivityConstants.KEY_TRANS_SOURCE, "SmsReceiverTransactions.java");
+                                t_intent.putExtra(EditTransactionActivityConstants.KEY_TRANS_ID, mCommon.transactionEntity.getId());
+                                t_intent.putExtra(EditTransactionActivityConstants.KEY_ACCOUNT_ID, String.valueOf(mCommon.transactionEntity.getAccountId()));
+                                t_intent.putExtra(EditTransactionActivityConstants.KEY_TO_ACCOUNT_ID, String.valueOf(mCommon.transactionEntity.getAccountToId()));
+                                t_intent.putExtra(EditTransactionActivityConstants.KEY_TRANS_CODE, mCommon.getTransactionType());
+                                t_intent.putExtra(EditTransactionActivityConstants.KEY_PAYEE_ID, String.valueOf(mCommon.transactionEntity.getPayeeId()));
+                                t_intent.putExtra(EditTransactionActivityConstants.KEY_PAYEE_NAME, mCommon.payeeName);
+                                t_intent.putExtra(EditTransactionActivityConstants.KEY_CATEGORY_ID, String.valueOf(mCommon.transactionEntity.getCategoryId()));
+                                t_intent.putExtra(EditTransactionActivityConstants.KEY_SUBCATEGORY_ID, String.valueOf(mCommon.transactionEntity.getSubcategoryId()));
+                                t_intent.putExtra(EditTransactionActivityConstants.KEY_TRANS_AMOUNT, String.valueOf(mCommon.transactionEntity.getAmount()));
+                                t_intent.putExtra(EditTransactionActivityConstants.KEY_NOTES, mCommon.transactionEntity.getNotes());
+                                t_intent.putExtra(EditTransactionActivityConstants.KEY_TRANS_DATE, new MmxDate().toDate());
+                                t_intent.putExtra(EditTransactionActivityConstants.KEY_TRANS_NUMBER, mCommon.transactionEntity.getTransactionNumber());
+
+                                // validate and save the transaction
+                                if(skipSaveTrans == false) {
+                                    if (validateData()) {
+                                        if (saveTransaction()) {
+
+                                            autoTransactionStatus = true;
+
+                                            if (behav_settings.getSmsTransStatusNotification()==true)
+                                            {
+                                                t_intent.setAction(Intent.ACTION_EDIT);
+                                                t_intent.putExtra(EditTransactionActivityConstants.KEY_TRANS_ID, mCommon.transactionEntity.getId());
+
+                                                showNotification(t_intent, msgBody, msgSender, "Successful");
+                                            }
+                                            else
+                                            {
+                                                Toast.makeText(context, "MMEX: Bank Transaction Processed for: \n\n" + strExtracted, Toast.LENGTH_LONG).show();
                                             }
                                         }
+                                        else
+                                        {
+                                            if (behav_settings.getSmsTransStatusNotification()==true)
+                                            { showNotification(t_intent, msgBody, msgSender, "Save Failed"); }
+                                            else
+                                            { startActivity(mContext, t_intent, null); }
+                                        }
+                                    }
+
+                                    //if transaction is not created automatically, then invoke notification or activity screen
+                                    if (autoTransactionStatus == false) {
+
+                                        if (behav_settings.getSmsTransStatusNotification()==true)
+                                        { showNotification(t_intent, msgBody, msgSender, "Auto Failed"); }
+                                        else
+                                        { startActivity(mContext, t_intent, null); }
+                                    }
+                                }
+                                else
+                                {
+                                    if (behav_settings.getSmsTransStatusNotification()==true)
+                                    {
+                                        showNotification(t_intent, "MMEX: Skiping Bank Transaction updates SMS, because transaction exists with ref. no. " + transRefNo, msgSender, "Already Exists");
                                     }
                                     else
                                     {
-                                        mCommon.transactionEntity.setAccountToId(Constants.NOT_SET);
-                                        mCommon.transactionEntity.setAmountTo(MoneyFactory.fromString(transAmount));
+                                        Toast.makeText(context, "MMEX: Skiping Bank Transaction updates SMS, because transaction exists with ref. no. " + transRefNo, Toast.LENGTH_LONG).show();
                                     }
-
-                                    if (!transPayee[0].isEmpty()) { //if payee not found then use the last payee
-
-                                        mCommon.transactionEntity.setPayeeId(parseInt(transPayee[0]));
-                                        mCommon.payeeName = transPayee[1];
-                                        mCommon.transactionEntity.setCategoryId(parseInt(transPayee[2]));
-                                        mCommon.transactionEntity.setSubcategoryId(parseInt(transPayee[3]));
-                                    } else {
-                                        mCommon.payeeName = "";
-                                    }
-
-                                    t_intent.setAction(Intent.ACTION_INSERT); //Set the action
-
-                                    break;
-
-                                default: //Update existing transaction
-
-                                    transType = "Transfer";
-
-                                    AccountTransactionRepository repo = new AccountTransactionRepository(mContext);
-                                    AccountTransaction txn = repo.load(txnId);
-
-                                    if (txn != null) {
-
-                                        if (txn.getTransactionType() != TransactionTypes.Transfer) {
-
-                                            AccountRepository accountRepository = new AccountRepository(mContext);
-
-                                            toAccountID = fromAccountID;
-                                            toCurrencyID = fromCurrencyID;
-                                            fromCurrencyID = accountRepository.loadCurrencyIdFor(txn.getAccountId());
-
-                                            mCommon.transactionEntity = txn;
-                                            mCommon.transactionEntity.setTransactionType(TransactionTypes.Transfer);
-                                            mCommon.transactionEntity.setAccountToId(toAccountID);
-
-                                            //convert the to amount from the both currency details
-                                            CurrencyService currencyService = new CurrencyService(mContext);
-                                            mCommon.transactionEntity.setAmountTo(currencyService.doCurrencyExchange(fromCurrencyID,
-                                                    mCommon.transactionEntity.getAmount(),
-                                                    toCurrencyID));
-
-                                            mCommon.transactionEntity.setPayeeId(Constants.NOT_SET);
-
-                                            String[] transCategory = getCategoryOrSubCategoryByName("Transfer");
-                                            if (!transCategory[0].isEmpty()) {
-                                                mCommon.transactionEntity.setCategoryId(parseInt(transCategory[0]));
-                                                mCommon.transactionEntity.setSubcategoryId(parseInt(transCategory[1]));
-                                            }
-
-                                            mCommon.transactionEntity.setNotes(mCommon.transactionEntity.getNotes() + "\n\n" + msgBody);
-                                        }
-
-                                    }
-
-                                    t_intent.setAction(Intent.ACTION_EDIT); //Set the action
-                            }
-
-                            // Capture the details the for Toast
-                            String strExtracted = "Account = " + fromAccountName + "-" + fromAccountDetails[6] + "\n"
-                                    + "Trans Amt = " + fromAccCurrencySymbl + " " + transAmount + ",\n"
-                                    + "Payyee Name= " + transPayee[1] + "\n"
-                                    + "Category ID = " + transPayee[2] + "\n"
-                                    + "Sub Category ID = " + transPayee[3] + "\n"
-                                    + "Trans Ref No. = " + transRefNo + "\n"
-                                    + "Trans Type = " + transType + "\n";
-
-                            // Set the content for a transaction);
-                            t_intent.putExtra(EditTransactionActivityConstants.KEY_TRANS_SOURCE, "SmsReceiverTransactions.java");
-                            t_intent.putExtra(EditTransactionActivityConstants.KEY_TRANS_ID, mCommon.transactionEntity.getId());
-                            t_intent.putExtra(EditTransactionActivityConstants.KEY_ACCOUNT_ID, String.valueOf(mCommon.transactionEntity.getAccountId()));
-                            t_intent.putExtra(EditTransactionActivityConstants.KEY_TO_ACCOUNT_ID, String.valueOf(mCommon.transactionEntity.getAccountToId()));
-                            t_intent.putExtra(EditTransactionActivityConstants.KEY_TRANS_CODE, mCommon.getTransactionType());
-                            t_intent.putExtra(EditTransactionActivityConstants.KEY_PAYEE_ID, String.valueOf(mCommon.transactionEntity.getPayeeId()));
-                            t_intent.putExtra(EditTransactionActivityConstants.KEY_PAYEE_NAME, mCommon.payeeName);
-                            t_intent.putExtra(EditTransactionActivityConstants.KEY_CATEGORY_ID, String.valueOf(mCommon.transactionEntity.getCategoryId()));
-                            t_intent.putExtra(EditTransactionActivityConstants.KEY_SUBCATEGORY_ID, String.valueOf(mCommon.transactionEntity.getSubcategoryId()));
-                            t_intent.putExtra(EditTransactionActivityConstants.KEY_TRANS_AMOUNT, String.valueOf(mCommon.transactionEntity.getAmount()));
-                            t_intent.putExtra(EditTransactionActivityConstants.KEY_NOTES, mCommon.transactionEntity.getNotes());
-                            t_intent.putExtra(EditTransactionActivityConstants.KEY_TRANS_DATE, new MmxDate().toDate());
-
-                            // validate and save the transaction
-                            if (validateData()) {
-                                if (saveTransaction()) {
-                                    Toast.makeText(context, "MMEX: Bank Transaction Processed for: \n\n" + strExtracted, Toast.LENGTH_LONG).show();
-                                    autoTransactionStatus = true;
                                 }
-                            }
 
-                            //if transaction is not created automatically, then invoke notification or activity screen
-                            if(autoTransactionStatus == false){
-                                startActivity(mContext, t_intent, null);
-                                //showNotification(t_intent, strExtracted);
-                            }
+                                //reset the value
+                                msgBody = "";
+                                msgSender = "";
+                                bundle = null;
+                                msgs = null;
+                                mCommon = null;
+                                skipSaveTrans = false;
 
-                            //reset the value
-                            bundle = null;
-                            msgs = null;
-                            msgBody = "";
-                            msgSender = "";
-                            mCommon = null;
+                            }
                         }
                     }
                 }
@@ -377,7 +463,7 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
         }
         catch(Exception e)
         {
-            Toast.makeText(context, "MMEX: Bank Transaction Process EXCEPTION --> " +  e, Toast.LENGTH_LONG).show();
+            Timber.e(e, "MMEX: Bank Transaction Process EXCEPTION");
         }
     }
 
@@ -400,11 +486,37 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
         }
         catch(Exception e)
         {
-            //System.err.println("EXCEPTION:" + e);
+            Timber.e(e, "getCurrencySymbl");
         }
 
         return  currencySymbl;
 
+    }
+
+    private static boolean isTransactionSms(String smsSender)
+    {
+        boolean reqMatch = false;
+
+        try
+        {
+            Pattern p = Pattern.compile("(-?[a-zA-Z]+)");
+            Matcher m = p.matcher(smsSender);
+
+            if (m != null)
+            {
+                while(m.find())
+                {
+                    reqMatch = true;
+                    break;
+                }
+            }
+        }
+        catch(Exception e)
+        {
+            Timber.e(e, "isTransactionSms");
+        }
+
+        return reqMatch;
     }
 
     private static boolean validateTransType(String[] keySearch, String smsMsg)
@@ -430,26 +542,125 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
         }
         catch(Exception e)
         {
-            //System.err.println("EXCEPTION:" + e);
+            Timber.e(e, "validateTransType");
         }
 
         return reqMatch;
     }
 
-    private static String[] extractAccountDetails(String smsMsg, int mIndx)
+    private static void extractAccountDetails(String smsMsg, String transType)
     {
-        String reqMatch = "";
-        String[] searchFor = {"((\\s)?(\\d+)?[X]+(\\d+)\\s)", "((\\s)?(\\d+)?[x]+(\\d+)\\s)",
-                "(.ay.m\\s.allet)", "(.ay.m)"};
-        int[] getGroup = {4, 4, 1, 1};
-        int mFound = 1;
-        String[] accountDetails = new String[]{"", "", "", "", "", "", ""};
+        String[] reqMatch =  new String[]{"", ""};
+
+        fromAccountDetails = new String[]{"", "", "", "", "", "", ""};
+        toAccountDetails = new String[]{"", "", "", "", "", "", ""};
+
+        int[] mIndx;
+
+        if(transType == "Transfer") { mIndx = new int[] {1, 2}; }
+        else { mIndx = new int[] {1}; }
+
+        try
+        {
+            //find the match for UPI transfer which has "from" or "to" string
+            boolean isUPI = smsMsg.contains("@");
+
+            switch (String.valueOf(isUPI))
+            {
+                case "false": //find the match for non UPI transfer or credit or debit
+
+                    for(int j=0; j<=mIndx.length-1; j++)
+                    {
+                        reqMatch[j] = searchForAccountNum(smsMsg, mIndx[j]);
+                    }
+                    break;
+
+                case "true": //UPI transfer based on from and to account
+
+                    String fromString = " from";
+                    String toString = " to";
+                    String nonUPIMsg = smsMsg;
+
+                    int fromIndex = smsMsg.indexOf(fromString);
+                    int toIndex = smsMsg.indexOf(toString);
+
+                    // sometime str "to" not exists, in place use str "in your"
+                    if(toIndex == -1){
+                        toString = " in your";
+                        toIndex = smsMsg.indexOf(toString);
+                    }
+
+                    if(fromIndex > 0) {
+                        if(fromIndex > toIndex) {
+                            reqMatch[0] = searchForAccountNum(smsMsg.substring(fromIndex), 1);
+                            if(toIndex == -1) { nonUPIMsg = smsMsg.substring(0, fromIndex); }
+                        }else{
+                            reqMatch[0] = searchForAccountNum(smsMsg.substring(fromIndex, toIndex), 1);
+                            nonUPIMsg = smsMsg.substring(0, fromIndex);
+                        }
+                    }
+
+                    if(toIndex > 0) {
+                        if(toIndex > fromIndex) {
+                            reqMatch[1] = searchForAccountNum(smsMsg.substring(toIndex), 1);
+                            if(toIndex == -1) { nonUPIMsg = smsMsg.substring(0, toIndex); }
+                        }else{
+                            reqMatch[1] = searchForAccountNum(smsMsg.substring(toIndex, fromIndex), 1);
+                            nonUPIMsg = smsMsg.substring(0, toIndex);
+                        }
+                    }
+
+                    if(fromIndex == -1) { reqMatch[0] = searchForAccountNum(nonUPIMsg, 1); }
+                    if(toIndex == -1) { reqMatch[1] = searchForAccountNum(nonUPIMsg, 1); }
+
+                    //if both the str are same then, reset 2nd index
+                    if(reqMatch[0].contains(reqMatch[1])) { reqMatch[1] = ""; }
+
+                    break;
+            }
+
+            getAccountDetails(reqMatch);
+
+        }
+        catch(Exception e)
+        {
+            Timber.e(e, "extractAccountDetails");
+        }
+    }
+
+    private static String searchForAccountNum(String smsMsg, int mIndx)
+    {
+        String reqMatch =  "";
+
+        // - ((\s)using\scard\s(.*?)\s.emaining) added for LBP currency. Request from HussienH
+        String[] searchFor =
+                {
+                        "((\\s)?((\\d+)?[X]+(\\d+))(\\s)?)", "((\\s)?((\\d+)?[x]+(\\d+))(\\s)?)", "((\\s)?((\\d+)?[\\*]+(\\d+))(\\s)?)",
+                        "((\\s)?Account\\s?No(.*?)\\s?(\\d+)(\\s)?)", "((\\s)?A/.\\s?No(.*?)\\s?(\\d+)(\\s)?)",
+                        "[N-n][O-o](.)?(:)?(\\s)?'(.*?)'", "((\\s)using\\scard\\s(.*?)\\s.emaining)",
+                        "([\\(]((.*?)[@](.*?))[\\)])", "(from((.*?)@(.*?))[.])", "(linked((.*?)@(.*?))[.])",
+                        "((\\s)virtual(\\s)address((.*?)@(.*?))(\\s))", "(your\\s(.*?)\\s+using)",
+                        "([\\[](\\d+)[\\]])", "(using(.*?)(\\.))", "(.ay.m\\s.allet)"
+                };
+
+        int[] getGroup =
+                {
+                        5, 5, 5,
+                        4, 4,
+                        4, 3,
+                        2, 2, 2,
+                        4, 2,
+                        2, 2, 1
+                };
+
+        int mFound;
 
         try
         {
             for(int i=0; i<=searchFor.length-1; i++)
             {
                 mFound = 1;
+
                 Pattern p = Pattern.compile(searchFor[i]);
                 Matcher m = p.matcher(smsMsg);
 
@@ -459,60 +670,37 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
                     {
                         if(mFound == mIndx)
                         {
-                            reqMatch = m.group(getGroup[i]).trim();
+                            // Append X with acc no, bcz start with X for non UPI trans
+                            if (m.group(getGroup[i]).trim().matches("\\d+") == true &&
+                                m.group(getGroup[i]).trim().matches("[a-zA-Z@]+") == false )
+                            {
+                                reqMatch = "X" + m.group(getGroup[i]).trim();
+                            }
+                            else{
+                                reqMatch = m.group(getGroup[i]).trim();
+                            }
                             break;
                         }
                         else { mFound = mFound + 1; }
                     }
                 }
             }
-
-            if (reqMatch != "") {
-
-                accountDetails = new String[] {"", "", "", "", "", "", reqMatch };
-
-                String sql =
-                        "SELECT A.ACCOUNTID, A.ACCOUNTNAME, A.ACCOUNTNUM, A.CURRENCYID, " +
-                                "C.CURRENCY_SYMBOL, C.DECIMAL_POINT, C.GROUP_SEPARATOR " +
-                                "FROM ACCOUNTLIST_V1 A " +
-                                "INNER JOIN CURRENCYFORMATS_V1 C ON C.CURRENCYID = A.CURRENCYID " +
-                                "WHERE A.STATUS='Open' AND A.ACCOUNTNUM LIKE '%" + reqMatch + "%' " +
-                                "ORDER BY A.ACCOUNTID " +
-                                "LIMIT 1";
-
-                Cursor accountCursor = db.rawQuery(sql, null);
-
-                if(accountCursor.moveToFirst())
-                {
-                    accountDetails = new String[] {
-                            accountCursor.getString(accountCursor.getColumnIndex("ACCOUNTID")),
-                            accountCursor.getString(accountCursor.getColumnIndex("ACCOUNTNAME")),
-                            accountCursor.getString(accountCursor.getColumnIndex("CURRENCYID")),
-                            accountCursor.getString(accountCursor.getColumnIndex("CURRENCY_SYMBOL")),
-                            accountCursor.getString(accountCursor.getColumnIndex("DECIMAL_POINT")),
-                            accountCursor.getString(accountCursor.getColumnIndex("GROUP_SEPARATOR")),
-                            reqMatch
-                    };
-                }
-
-                accountCursor.close();
-            }
-
         }
         catch(Exception e)
         {
-            //System.err.println("EXCEPTION:" + e);
+            Timber.e(e, "searchForAccountNum");
         }
 
-        return accountDetails;
+        return reqMatch;
     }
 
-    private static String extractTransAmount(String smsMsg, String fromAccCurrencySymbl)
+    private static String extractTransAmount(int indexOfAmt, String smsMsg, String fromAccCurrencySymbl)
     {
         String reqMatch = "";
         smsMsg = smsMsg.replace(",", "");
         String searchFor = "((\\s)?##SEARCH4CURRENCY##(.)?(\\s)?((\\d+)(\\.\\d+)?))";
         int[] getGroup = {5};
+        int indx = 0;
 
         //Handle multiple symbol for currency
         String[] searchCurrency;
@@ -534,8 +722,12 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
                 {
                     while(m.find())
                     {
-                        reqMatch = m.group(getGroup[0]).trim();
-                        break;
+                        if (indx==indexOfAmt){
+                            reqMatch = m.group(getGroup[0]).trim();
+                            break;
+                        }
+
+                        indx = indx + 1;
                     }
                 }
             }
@@ -543,7 +735,7 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
         }
         catch(Exception e)
         {
-            //System.err.println("EXCEPTION:"+e);
+            Timber.e(e, "extractTransAmount");
         }
 
         return reqMatch;
@@ -551,12 +743,16 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
 
     private static String[] extractTransPayee(String smsMsg)
     {
+        // - ((\s)at\s(.*?)\s+using) added for LBP currency. Request from HussienH
         String[] searchFor = {
-                "((\\s)at+(.*?)\\s+on)", "((\\s)favoring+(.*?)\\s+is)",
-                "((\\s)to+(.*?)\\s+at)", "((\\s)to+(.*?)[.])", "((\\s)at+(.*?)[.])", "([\\*](.*?)[.])",
-                "((\\s)FROM+(.*?)\\s+\\d)", "(from\\s(.*?)\\s(\\())", "(.ay.m)"};
+                "((\\s)at\\s(.*?)\\s+on)", "((\\s)favoring\\s(.*?)\\s+is)",
+                "((\\s)to\\s(.*?)\\s+at)", "((\\s)to\\s(.*?)[.])",
+                "((\\s)at\\s(.*?)[.])", "([\\*](.*?)[.])",
+                "((\\s)FROM\\s(.*?)\\s+\\d)", "(from\\s(.*?)\\s(\\())", "(([a-zA-Z]+)(\\s)has(\\s)added)",
+                "((\\s)paid\\s(.*?)\\s)",
+                "((\\s)at\\s(.*?)\\s+using)" };
 
-        int[] getGroup = {3, 3, 3, 3, 3, 2, 3, 2, 1};
+        int[] getGroup = {3, 3, 3, 3, 3, 2, 3, 2, 2, 3, 3};
         String[] reqMatch = new String[]{"", "", "", ""};
 
         try
@@ -581,7 +777,7 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
         }
         catch(Exception e)
         {
-            //System.err.println("EXCEPTION:"+e);
+            Timber.e(e, "extractTransPayee");
         }
 
         return reqMatch;
@@ -590,11 +786,14 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
     private static String extractTransRefNo(String smsMsg)
     {
         String reqMatch = "";
-        String[] searchFor = {"(IMPS+\\sRef\\s+no+\\s(\\d+))", "(\\/+(\\d+)+\\/)",
-                "((ID(.)?(:)?)+(\\d+))", "((id is+\\s(:)?)+(\\d+))",
-                "(Info(:)+(\\s)?[A-Z]+([-][A-Z]+)?[\\*]?(\\d+)[\\*]?[-]?[a-zA-Z]+(\\s)?[A-Za-z]+[.])",
-                "(Info(:)+(\\s)?(\\d+)[:])"};
-        int[] getGroup = {2, 2, 5, 4, 5, 4};
+        String[] searchFor = {"(Cheque\\sNo[.*?](\\d+))", "(Ref\\sno(:)?\\s(\\d+))", "(\\s(\\d+(.*?)\\d+)TXN\\s)",
+                "(I[D//d](.)?(:)?(\\s)?((.*?)\\w+))", "(I[D//d](.)?(:)?)(\\s)?(\\d+)", "(id(\\s)is(\\s)?(:)?(\\d+))",
+                "((Reference:)(\\s)?(\\d+))",  "([\\*](\\d+)[\\*])", "(Info(:)+(.*?)(\\d+)[:]?[-]?)",
+                "((reference number)(.*?)(\\d+))", "(\\s)?#(\\s?)(\\d+)(\\s?)",  "(\\/+(\\d+)+\\/)"};
+        int[] getGroup = {2, 3, 2,
+                          5, 5, 5,
+                          4, 2, 4,
+                          4, 3, 2};
 
         try
         {
@@ -615,7 +814,7 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
         }
         catch(Exception e)
         {
-            //System.err.println("EXCEPTION:"+e);
+            Timber.e(e, "extractTransRefNo");
         }
 
         return reqMatch;
@@ -651,13 +850,13 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
         }
         catch(Exception e)
         {
-            //System.err.println("EXCEPTION:"+e);
+            Timber.e(e, "getPayeeDetails");
         }
 
         return payeeDetails;
     }
 
-    private static Integer getTxnId(String refNumber, String transType, String transDate)
+    private static Integer getTxnId(String refNumber, String transDate)
     {
         int txnId = 0;
 
@@ -666,9 +865,9 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
             if(!refNumber.trim().isEmpty()) {
 
                 String sql =
-                        "SELECT TRANSID, NOTES, TRANSDATE " +
+                        "SELECT TRANSID " +
                                 "FROM CHECKINGACCOUNT_V1 " +
-                                "WHERE NOTES LIKE '%" + refNumber + "%' AND TRANSCODE <> '" + transType + "' " +
+                                "WHERE TRANSACTIONNUMBER  LIKE '%" + refNumber + "%' " +
                                 "AND TRANSDATE ='" + transDate + "' " +
                                 "ORDER BY TRANSID LIMIT 1";
 
@@ -684,7 +883,7 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
         }
         catch(Exception e)
         {
-            //System.err.println("EXCEPTION:"+e);
+            Timber.e(e, "getTxnId");
         }
 
         return txnId;
@@ -737,10 +936,66 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
         }
         catch(Exception e)
         {
-            System.err.println("EXCEPTION:"+e);
+            Timber.e(e, "getCategoryOrSubCategoryByName");
         }
 
         return cTran;
+    }
+
+    private static void getAccountDetails(String[] reqMatch)
+    {
+        String[] accountDetails = new String[]{"", "", "", "", "", "", ""};
+
+        try
+        {
+            for(int j=0; j<=reqMatch.length-1; j++)
+            {
+                if (reqMatch[j] != "") {
+
+                    accountDetails = new String[] {"", "", "", "", "", "", reqMatch[j] };
+
+                    String sql =
+                            "SELECT A.ACCOUNTID, A.ACCOUNTNAME, A.ACCOUNTNUM, A.CURRENCYID, " +
+                                    "C.CURRENCY_SYMBOL, C.DECIMAL_POINT, C.GROUP_SEPARATOR " +
+                                    "FROM ACCOUNTLIST_V1 A " +
+                                    "INNER JOIN CURRENCYFORMATS_V1 C ON C.CURRENCYID = A.CURRENCYID " +
+                                    "WHERE A.STATUS='Open' AND A.ACCOUNTNUM LIKE '%" + reqMatch[j] + "%' " +
+                                    "ORDER BY A.ACCOUNTID " +
+                                    "LIMIT 1";
+
+                    Cursor accountCursor = db.rawQuery(sql, null);
+
+                    if(accountCursor.moveToFirst())
+                    {
+                        accountDetails = new String[] {
+                                accountCursor.getString(accountCursor.getColumnIndex("ACCOUNTID")),
+                                accountCursor.getString(accountCursor.getColumnIndex("ACCOUNTNAME")),
+                                accountCursor.getString(accountCursor.getColumnIndex("CURRENCYID")),
+                                accountCursor.getString(accountCursor.getColumnIndex("CURRENCY_SYMBOL")),
+                                accountCursor.getString(accountCursor.getColumnIndex("DECIMAL_POINT")),
+                                accountCursor.getString(accountCursor.getColumnIndex("GROUP_SEPARATOR")),
+                                reqMatch[j]
+                        };
+                    }
+
+                    switch (j)
+                    {
+                        case 0: //from account
+                            fromAccountDetails = accountDetails;
+                            break;
+                        case 1: //to account
+                            toAccountDetails = accountDetails;
+                            break;
+                    }
+
+                    accountCursor.close();
+                }
+            }
+        }
+        catch(Exception e)
+        {
+            Timber.e(e, "getAccountDetails");
+        }
     }
 
     public boolean validateData() {
@@ -825,30 +1080,57 @@ public class SmsReceiverTransactions extends BroadcastReceiver {
      * @param intent
      * @param notificationText
      */
-    private void showNotification(Intent intent, String notificationText) {
+    private void showNotification(Intent intent, String notificationText, String msgSender, String txnStatus) {
 
-        int NOTIFICATION_ID = (int) ((new Date().getTime() / 1000L) % Integer.MAX_VALUE);
+        try {
 
-        String NOTIFICATION_CHANNEL_ID = "ammex_" + String.valueOf(NOTIFICATION_ID); // The id of the channel.
+            String GROUP_KEY_AMMEX = "com.android.example.MoneyManagerEx";
+            int ID_NOTIFICATION =  (int) ((new Date().getTime() / 1000L) % Integer.MAX_VALUE);
 
-        intent.putExtra("NOTIFICATION_ID", NOTIFICATION_ID);
+            PendingIntent pendingIntent = PendingIntent.getActivity(mContext, ID_NOTIFICATION, intent, PendingIntent.FLAG_UPDATE_CURRENT);
 
-        PendingIntent pendingIntent = PendingIntent.getActivity(mContext, 1910, intent, 0);
+            NotificationManager notificationManager = (NotificationManager) mContext
+                    .getSystemService(Context.NOTIFICATION_SERVICE);
 
-        // Gets an instance of the NotificationManager service
-        NotificationManager mNotificationManager =  (NotificationManager) mContext.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                // Create the NotificationChannel
+                NotificationChannel nChannel = new NotificationChannel(CHANNEL_ID, "AMMEXSMS", NotificationManager.IMPORTANCE_DEFAULT);
+                nChannel.setDescription(mContext.getString(R.string.notification_process_sms_channel_description));
 
-        //Get an instance of NotificationManager//
-        NotificationCompat.Builder mBuilder = new NotificationCompat.Builder(mContext, NOTIFICATION_CHANNEL_ID)
-                .setSmallIcon(R.drawable.ic_stat_notification)
-                .setContentTitle(mContext.getString(R.string.application_name) + " - SMS Auto Transaction Failed")
-                .setContentText(notificationText)
-                .setContentIntent(pendingIntent)
-                .setPriority(Notification.PRIORITY_MAX)
-                .setNumber(1)
-                .setOngoing(true)
-                .setAutoCancel(true);
+                // Register the channel with the system; you can't change the importance
+                // or other notification behaviors after this
+                notificationManager.createNotificationChannel(nChannel);
+            }
 
-        mNotificationManager.notify(NOTIFICATION_ID, mBuilder.build());
+            Notification notification = new NotificationCompat.Builder(mContext, CHANNEL_ID)
+                    .setAutoCancel(true)
+                    .setContentIntent(pendingIntent)
+                    .setContentTitle(mContext.getString(R.string.notification_process_sms_transaction_status) + ": " + txnStatus)
+                    .setSubText(mContext.getString(R.string.notification_click_to_edit_transaction))
+                    .setSmallIcon(R.drawable.ic_stat_notification)
+                    .setStyle(new NotificationCompat.BigTextStyle()
+                            .bigText(msgSender + " : " + notificationText))
+                    .setDefaults(Notification.DEFAULT_VIBRATE | Notification.DEFAULT_SOUND | Notification.DEFAULT_LIGHTS)
+                    .setGroup(GROUP_KEY_AMMEX)
+                    .build();
+
+            // Change the notification color based on the status
+            switch(txnStatus){
+                case "Auto Failed":
+                    notification.color = mContext.getResources().getColor(R.color.md_red);
+                    break;  //optional
+                case "Already Exists":
+                    notification.color = mContext.getResources().getColor(R.color.md_indigo);
+                    break;  //optional
+                default:
+                    notification.color = mContext.getResources().getColor(R.color.md_primary);
+            }
+
+            // notify
+            notificationManager.notify(ID_NOTIFICATION, notification);
+
+            } catch (Exception e) {
+                Timber.e(e, "showing notification for sms transaction");
+            }
     }
 }

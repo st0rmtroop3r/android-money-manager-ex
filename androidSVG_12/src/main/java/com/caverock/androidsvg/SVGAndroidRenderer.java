@@ -17,20 +17,27 @@
 package com.caverock.androidsvg;
 
 
+import android.annotation.SuppressLint;
+import android.annotation.TargetApi;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
+import android.graphics.ColorMatrix;
+import android.graphics.ColorMatrixColorFilter;
 import android.graphics.DashPathEffect;
 import android.graphics.LinearGradient;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PathMeasure;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffXfermode;
 import android.graphics.RadialGradient;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Shader.TileMode;
 import android.graphics.Typeface;
+import android.os.Build;
 import android.util.Base64;
 import android.util.Log;
 
@@ -76,8 +83,6 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.Stack;
 
-import static android.R.attr.y;
-
 /*
  * The rendering part of AndroidSVG.
  */
@@ -88,7 +93,6 @@ class SVGAndroidRenderer
 
    private Canvas   canvas;
    private float    dpi;    // dots per inch. Needed for accurate conversion of length values that have real world units, such as "cm".
-   private boolean  directRenderingMode;
 
    // Renderer state
    private SVG                  document;
@@ -99,23 +103,19 @@ class SVGAndroidRenderer
    private Stack<SvgContainer>  parentStack; // The 'render parent' for elements like Symbol cf. file parent
    private Stack<Matrix>        matrixStack; // Keeps track of current transform as we descend into element tree
 
-   // Canvas stack for when we are processing mask elements
-   private Stack<Canvas>  canvasStack;
-   private Stack<Bitmap>  bitmapStack;
-
-
    private static final float  BEZIER_ARC_FACTOR = 0.5522847498f;
 
    // The feColorMatrix luminance-to-alpha coefficient. Used for <mask>s.
-   // Using integer arithmetic for a little extra speed.
-   private static final int  LUMINANCE_FACTOR_SHIFT = 15;
-   private static final int  LUMINANCE_TO_ALPHA_RED = (int)(0.2125f * (1 << LUMINANCE_FACTOR_SHIFT));
-   private static final int  LUMINANCE_TO_ALPHA_GREEN = (int)(0.7154f * (1 << LUMINANCE_FACTOR_SHIFT));
-   private static final int  LUMINANCE_TO_ALPHA_BLUE = (int)(0.0721f * (1 << LUMINANCE_FACTOR_SHIFT));
+   // Note we are using the CSS/SVG2 version of the coefficients here, rather than the older SVG1.1 coefficients.
+   public static final float  LUMINANCE_TO_ALPHA_RED   = 0.2127f;
+   public static final float  LUMINANCE_TO_ALPHA_GREEN = 0.7151f;
+   public static final float  LUMINANCE_TO_ALPHA_BLUE  = 0.0722f;
 
    private static final String DEFAULT_FONT_FAMILY = "serif";
 
    private static HashSet<String>  supportedFeatures = null;
+
+   private CSSParser.RuleMatchContext  ruleMatchContext = null;
 
 
    private class RendererState
@@ -128,10 +128,6 @@ class SVGAndroidRenderer
       SVG.Box  viewPort;
       SVG.Box  viewBox;
       boolean  spacePreserve;
-
-      // Set when we doing direct rendering.
-      boolean  directRendering;
-
 
       RendererState()
       {
@@ -159,7 +155,6 @@ class SVGAndroidRenderer
          if (copy.viewBox != null)
             viewBox = new Box(copy.viewBox);
          spacePreserve = copy.spacePreserve;
-         directRendering = copy.directRendering;
          try
          {
             style = (Style) copy.style.clone();
@@ -185,14 +180,9 @@ class SVGAndroidRenderer
       state.viewPort = null;  // Get filled in later
 
       state.spacePreserve = false;
-      state.directRendering = this.directRenderingMode;
 
       // Push a copy of the state with 'default' style, so that inherit works for top level objects
       stateStack.push(new RendererState(state));   // Manual push here - don't use statePush();
-
-      // Initialise the stacks used for mask handling
-      canvasStack = new Stack<>();
-      bitmapStack = new Stack<>();
 
       // Keep track of element stack while rendering.
       // The 'render parent' for some elements (eg <use> references) is different from its DOM parent.
@@ -251,16 +241,52 @@ class SVGAndroidRenderer
    /*
     * Render the whole document.
     */
-   void  renderDocument(SVG document, Box canvasViewPort, Box viewBox, PreserveAspectRatio positioning, boolean directRenderingMode)
+   void  renderDocument(SVG document, RenderOptions renderOptions)
    {
+      if (renderOptions == null)
+         throw new NullPointerException("renderOptions shouldn't be null");  // Sanity check. Should never happen
+
       this.document = document;
-      this.directRenderingMode = directRenderingMode;
 
       SVG.Svg  rootObj = document.getRootElement();
 
       if (rootObj == null) {
          warn("Nothing to render. Document is empty.");
          return;
+      }
+
+      SVG.Box              viewBox;
+      PreserveAspectRatio  preserveAspectRatio;
+
+      if (renderOptions.hasView())
+      {
+         SvgObject  obj = this.document.getElementById(renderOptions.viewId);
+         if (obj == null || !(obj instanceof SVG.View)) {
+            Log.w(TAG, String.format("View element with id \"%s\" not found.", renderOptions.viewId));
+            return;
+         }
+         SVG.View  view = (SVG.View) obj;
+
+         if (view.viewBox == null) {
+            Log.w(TAG, String.format("View element with id \"%s\" is missing a viewBox attribute.", renderOptions.viewId));
+            return;
+         }
+         viewBox = view.viewBox;
+         preserveAspectRatio = view.preserveAspectRatio;
+      }
+      else
+      {
+         viewBox = renderOptions.hasViewBox() ? renderOptions.viewBox
+                                              : rootObj.viewBox;
+         preserveAspectRatio = renderOptions.hasPreserveAspectRatio() ? renderOptions.preserveAspectRatio
+                                                                      : rootObj.preserveAspectRatio;
+      }
+
+      if (renderOptions.hasCss())
+         document.addCSSRules(renderOptions.css);
+      if (renderOptions.hasTarget()) {
+         this.ruleMatchContext = new CSSParser.RuleMatchContext();
+         this.ruleMatchContext.targetElement = document.getElementById(renderOptions.targetId);
       }
 
       // Initialise the state
@@ -271,13 +297,21 @@ class SVGAndroidRenderer
       // Save state
       statePush();
 
+      Box  viewPort = new Box(renderOptions.viewPort);
+      // If root element specifies a width, then we need to adjust our default viewPort that was based on the canvas size
+      if (rootObj.width != null)
+         viewPort.width = rootObj.width.floatValue(this, viewPort.width);
+      if (rootObj.height != null)
+         viewPort.height = rootObj.height.floatValue(this, viewPort.height);
+
       // Render the document
-      render(rootObj, canvasViewPort,
-             (viewBox != null) ? viewBox : rootObj.viewBox,
-             (positioning != null) ? positioning : rootObj.preserveAspectRatio);
+      render(rootObj, viewPort, viewBox, preserveAspectRatio);
 
       // Restore state
       statePop();
+
+      if (renderOptions.hasCss())
+         document.clearRenderCSSRules();
    }
 
 
@@ -404,7 +438,7 @@ class SVGAndroidRenderer
       {
          for (CSSParser.Rule rule: document.getCSSRules())
          {
-            if (CSSParser.ruleMatch(rule.selector, obj)) {
+            if (CSSParser.ruleMatch(this.ruleMatchContext, rule.selector, obj)) {
                updateStyle(state, rule.style);
             }
          }
@@ -691,13 +725,13 @@ class SVGAndroidRenderer
          return false;
 
       // Custom version of statePush() that also saves the layer
-      canvas.saveLayerAlpha(null, clamp255(state.style.opacity), Canvas.HAS_ALPHA_LAYER_SAVE_FLAG);
+      canvas.saveLayerAlpha(null, clamp255(state.style.opacity), Canvas.ALL_SAVE_FLAG);
 
       // Save style state
       stateStack.push(state);
       state = new RendererState(state);
 
-      if (state.style.mask != null && state.directRendering) {
+      if (state.style.mask != null) {
          SVG.SvgObject  ref = document.resolveIRI(state.style.mask);
          // Check the we are referencing a mask element
          if (ref == null || !(ref instanceof SVG.Mask)) {
@@ -706,9 +740,9 @@ class SVGAndroidRenderer
             state.style.mask = null;
             return true;
          }
-         // We now need to replace the canvas with one onto which we draw the content that is getting masked
-         canvasStack.push(canvas);
-         duplicateCanvas();
+
+         // After this method completes, the caller will draw the masked object to it's own layer.
+         // That will later be composited together with our mask layer (in popLayer())
       }
 
       return true;
@@ -718,21 +752,43 @@ class SVGAndroidRenderer
    private void  popLayer(SvgElement obj)
    {
       // If this is masked content, apply the mask now
-      if (state.style.mask != null && state.directRendering) {
-         // The masked content has been drawn, now we have to render the mask to a separate canvas
-         SVG.SvgObject  ref = document.resolveIRI(state.style.mask);
-         duplicateCanvas();
-         renderMask((SVG.Mask) ref, obj);
-         
-         Bitmap  maskedContent = processMaskBitmaps();
-         
-         // Retrieve the real canvas
-         canvas = canvasStack.pop();
-         canvas.save();
-         // Reset the canvas matrix so that we can draw the maskedContent exactly over the top of the root bitmap
-         canvas.setMatrix(new Matrix());
-         canvas.drawBitmap(maskedContent, 0, 0, state.fillPaint);  // FIXME paint
-         maskedContent.recycle();
+      if (state.style.mask != null) {
+         // The masked content has been drawn, now we have to composite it with our mask layer.
+         // The mask has to be built from two parts:
+         // Step 1: Apply a luminanceToAlpha conversion to the mask content.
+         // Step 2: Multiply the mask's alpha to the alpha channel generated in step 1.
+
+         // Final mask gets composited using Porter Duff mode DST_IN
+         Paint  maskPaintCombined = new Paint();
+         maskPaintCombined.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_IN));
+         canvas.saveLayer(null, maskPaintCombined, Canvas.ALL_SAVE_FLAG);
+
+           // Step 1
+           Paint  maskPaint1 = new Paint();
+           // ColorFilter that does the SVG luminanceToAlpha conversion
+           ColorMatrix  luminanceToAlpha = new ColorMatrix(new float[] {0,       0,       0,       0, 0,
+                                                                        0,       0,       0,       0, 0,
+                                                                        0,       0,       0,       0, 0,
+                                                                        SVGAndroidRenderer.LUMINANCE_TO_ALPHA_RED, SVGAndroidRenderer.LUMINANCE_TO_ALPHA_GREEN, SVGAndroidRenderer.LUMINANCE_TO_ALPHA_BLUE, 0, 0});
+           maskPaint1.setColorFilter(new ColorMatrixColorFilter(luminanceToAlpha));
+           canvas.saveLayer(null, maskPaint1, Canvas.ALL_SAVE_FLAG);   // TODO use real mask bounds
+
+             // Render the mask content into the step 1 part
+             SVG.SvgObject  ref = document.resolveIRI(state.style.mask);
+             renderMask((SVG.Mask) ref, obj);
+
+           canvas.restore();
+
+           // Step 2
+           Paint  maskPaint2 = new Paint();
+           maskPaint2.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_IN));
+           canvas.saveLayer(null, maskPaint2, Canvas.ALL_SAVE_FLAG);
+
+             // Render the mask content (again) into the step 2 part
+             renderMask((SVG.Mask) ref, obj);
+
+           canvas.restore();
+
          canvas.restore();
       }
 
@@ -742,69 +798,8 @@ class SVGAndroidRenderer
 
    private boolean requiresCompositing()
    {
-      if (state.style.mask != null && !state.directRendering)
-         warn("Masks are not supported when using getPicture()");
-
       return (state.style.opacity < 1.0f) ||
-             (state.style.mask != null && state.directRendering);
-   }
-
-
-   @SuppressWarnings("deprecation")
-   private void duplicateCanvas()
-   {
-      try {
-         Bitmap  newBM = Bitmap.createBitmap(canvas.getWidth(), canvas.getHeight(), Bitmap.Config.ARGB_8888);
-         bitmapStack.push(newBM);
-         Canvas  newCanvas = new Canvas(newBM);
-         newCanvas.setMatrix(canvas.getMatrix());
-         canvas = newCanvas;
-      } catch (OutOfMemoryError e) {
-         error("Not enough memory to create temporary bitmaps for mask processing");
-         throw e;
-      }
-   }
-
-
-   private Bitmap  processMaskBitmaps()
-   {
-      // Retrieve the rendered mask
-      Bitmap  mask = bitmapStack.pop();
-      // Retrieve the rendered content to which the mask is to be applied
-      Bitmap  maskedContent = bitmapStack.pop();
-      // Convert the mask bitmap to an alpha channel and multiply it to the content
-      // We will process the bitmaps in a row-wise fashion to save memory.
-      // It doesn't seem to be be significantly slower than doing it all at once.
-      int    w = mask.getWidth();
-      int    h = mask.getHeight();
-      int[]  maskBuf = new int[w];
-      int[]  maskedContentBuf = new int[w];
-      for (int y=0; y<h; y++)
-      {
-         mask.getPixels(maskBuf, 0, w, 0, y, w, 1);
-         maskedContent.getPixels(maskedContentBuf, 0, w, 0, y, w, 1);
-         for (int x=0; x<w; x++)
-         {
-            int  px = maskBuf[x];
-            int  b = px & 0xff;
-            int  g = (px >> 8) & 0xff;
-            int  r = (px >> 16) & 0xff;
-            int  a = (px >> 24) & 0xff;
-            if (a == 0) {
-               // Shortcut for transparent mask pixels
-               maskedContentBuf[x] = 0;
-               continue;
-            }
-            int  maskAlpha = (r * LUMINANCE_TO_ALPHA_RED + g * LUMINANCE_TO_ALPHA_GREEN + b * LUMINANCE_TO_ALPHA_BLUE) * a / (255 << LUMINANCE_FACTOR_SHIFT);
-            int  content = maskedContentBuf[x];
-            int  contentAlpha = (content >> 24) & 0xff;
-            contentAlpha = (contentAlpha * maskAlpha) / 255;
-            maskedContentBuf[x] = (content & 0x00ffffff) | (contentAlpha << 24);
-         }
-         maskedContent.setPixels(maskedContentBuf, 0, w, 0, y, w, 1);
-      }
-      mask.recycle();
-      return maskedContent;
+             (state.style.mask != null);
    }
 
 
@@ -843,7 +838,7 @@ class SVGAndroidRenderer
    private void  renderSwitchChild(SVG.Switch obj)
    {
       String                   deviceLanguage = Locale.getDefault().getLanguage();
-      SVGExternalFileResolver  fileResolver = document.getFileResolver();
+      SVGExternalFileResolver  fileResolver = SVG.getFileResolver();
 
       ChildLoop:
       for (SVG.SvgObject child: obj.getChildren())
@@ -1293,6 +1288,8 @@ class SVGAndroidRenderer
       Path  path = makePathAndBoundingBox(obj);
       updateParentBoundingBox(obj);
 
+      path.setFillType(getFillTypeFromState());
+
       checkForGradientsAndPatterns(obj);
       checkForClipPath(obj);
       
@@ -1555,12 +1552,26 @@ class SVGAndroidRenderer
          if (display())
          {
             // Get the first coordinate pair from the lists in the x and y properties.
-            float x=0, y=0, dx=0, dy=0;
+            float    x=0, y=0, dx=0, dy=0;
+            boolean  specifiedX = (tspan.x != null && tspan.x.size() > 0);
             if (textprocessor instanceof PlainTextDrawer) {
-               x = (tspan.x == null || tspan.x.size() == 0) ? ((PlainTextDrawer) textprocessor).x : tspan.x.get(0).floatValueX(this);
+               x = !specifiedX ? ((PlainTextDrawer) textprocessor).x : tspan.x.get(0).floatValueX(this);
                y = (tspan.y == null || tspan.y.size() == 0) ? ((PlainTextDrawer) textprocessor).y : tspan.y.get(0).floatValueY(this);
                dx = (tspan.dx == null || tspan.dx.size() == 0) ? 0f : tspan.dx.get(0).floatValueX(this);
                dy = (tspan.dy == null || tspan.dy.size() == 0) ? 0f : tspan.dy.get(0).floatValueY(this);
+            }
+
+            // If x was specified on tspan, then we need to recalculate the alignment
+            if (specifiedX) {
+              Style.TextAnchor  anchor = getAnchorPosition();
+              if (anchor != Style.TextAnchor.Start) {
+                 float  textWidth = calculateTextWidth(tspan);
+                 if (anchor == Style.TextAnchor.Middle) {
+                    x -= (textWidth / 2);
+                 } else {
+                    x -= textWidth;  // 'End' (right justify)
+                 }
+               }
             }
 
             checkForGradientsAndPatterns((SvgElement) tspan.getTextRoot());
@@ -1890,7 +1901,7 @@ class SVGAndroidRenderer
       Bitmap  image = checkForImageDataURL(obj.href);
       if (image == null)
       {
-         SVGExternalFileResolver  fileResolver = document.getFileResolver();
+         SVGExternalFileResolver  fileResolver = SVG.getFileResolver();
          if (fileResolver == null)
             return;
 
@@ -1900,6 +1911,7 @@ class SVGAndroidRenderer
          error("Could not locate image '%s'", obj.href);
          return;
       }
+      SVG.Box  imageNaturalSize = new SVG.Box(0,  0,  image.getWidth(), image.getHeight());
 
       updateStyleForElement(state, obj);
 
@@ -1922,9 +1934,7 @@ class SVGAndroidRenderer
          setClipRect(state.viewPort.minX, state.viewPort.minY, state.viewPort.width, state.viewPort.height);
       }
 
-      obj.boundingBox = new SVG.Box(0,  0,  image.getWidth(), image.getHeight());
-      canvas.concat(calculateViewBoxTransform(state.viewPort, obj.boundingBox, positioning));
-
+      obj.boundingBox = state.viewPort;
       updateParentBoundingBox(obj);
 
       checkForClipPath(obj);
@@ -1933,8 +1943,15 @@ class SVGAndroidRenderer
 
       viewportFill();
 
+      canvas.save();
+
+      // Local transform from image's natural dimensions to the specified SVG dimensions
+      canvas.concat(calculateViewBoxTransform(state.viewPort, imageNaturalSize, positioning));
+
       Paint  bmPaint = new Paint((state.style.imageRendering == RenderQuality.optimizeSpeed) ? 0 : Paint.FILTER_BITMAP_FLAG);
       canvas.drawBitmap(image, 0, 0, bmPaint);
+
+      canvas.restore();
 
       if (compositing)
          popLayer(obj);
@@ -2016,21 +2033,21 @@ class SVGAndroidRenderer
 
       // Otherwise, the aspect ratio of the image is kept.
       // What scale are we going to use?
-      float  scale = (positioning.getScale() == PreserveAspectRatio.Scale.Slice) ? Math.max(xScale,  yScale) : Math.min(xScale,  yScale);
+      float  scale = (positioning.getScale() == PreserveAspectRatio.Scale.slice) ? Math.max(xScale,  yScale) : Math.min(xScale,  yScale);
       // What size will the image end up being? 
       float  imageW = viewPort.width / scale;
       float  imageH = viewPort.height / scale;
       // Determine final X position
       switch (positioning.getAlignment())
       {
-         case XMidYMin:
-         case XMidYMid:
-         case XMidYMax:
+         case xMidYMin:
+         case xMidYMid:
+         case xMidYMax:
             xOffset -= (viewBox.width - imageW) / 2;
             break;
-         case XMaxYMin:
-         case XMaxYMid:
-         case XMaxYMax:
+         case xMaxYMin:
+         case xMaxYMid:
+         case xMaxYMax:
             xOffset -= (viewBox.width - imageW);
             break;
          default:
@@ -2040,14 +2057,14 @@ class SVGAndroidRenderer
       // Determine final Y position
       switch (positioning.getAlignment())
       {
-         case XMinYMid:
-         case XMidYMid:
-         case XMaxYMid:
+         case xMinYMid:
+         case xMidYMid:
+         case xMaxYMid:
             yOffset -= (viewBox.height - imageH) / 2;
             break;
-         case XMinYMax:
-         case XMidYMax:
-         case XMaxYMax:
+         case xMinYMax:
+         case xMidYMax:
+         case xMaxYMax:
             yOffset -= (viewBox.height - imageH);
             break;
          default:
@@ -2072,7 +2089,7 @@ class SVGAndroidRenderer
     * Updates the global style state with the style defined by the current object.
     * Will also update the current paints etc where appropriate.
     */
-   private void updateStyle(RendererState state, Style style)
+   private void  updateStyle(RendererState state, Style style)
    {
       // Now update each style property we know about
       if (isSpecified(style, SVG.SPECIFIED_COLOR))
@@ -2088,7 +2105,7 @@ class SVGAndroidRenderer
       if (isSpecified(style, SVG.SPECIFIED_FILL))
       {
          state.style.fill = style.fill;
-         state.hasFill = (style.fill != null);
+         state.hasFill = (style.fill != null && style.fill != Colour.TRANSPARENT);
       }
 
       if (isSpecified(style, SVG.SPECIFIED_FILL_OPACITY))
@@ -2111,7 +2128,7 @@ class SVGAndroidRenderer
       if (isSpecified(style, SVG.SPECIFIED_STROKE))
       {
          state.style.stroke = style.stroke;
-         state.hasStroke = (style.stroke != null);
+         state.hasStroke = (style.stroke != null && style.stroke != Colour.TRANSPARENT);
       }
 
       if (isSpecified(style, SVG.SPECIFIED_STROKE_OPACITY))
@@ -2257,7 +2274,7 @@ class SVGAndroidRenderer
          Typeface  font = null;
 
          if (state.style.fontFamily != null && document != null) {
-            SVGExternalFileResolver  fileResolver = document.getFileResolver();
+            SVGExternalFileResolver  fileResolver = SVG.getFileResolver();
 
             for (String fontName: state.style.fontFamily) {
                font = checkGenericFont(fontName, state.style.fontWeight, state.style.fontStyle);
@@ -2439,16 +2456,10 @@ class SVGAndroidRenderer
 
    private Path.FillType  getFillTypeFromState()
    {
-      if (state.style.fillRule == null)
+      if (state.style.fillRule != null && state.style.fillRule == Style.FillRule.EvenOdd)
+         return Path.FillType.EVEN_ODD;
+      else
          return Path.FillType.WINDING;
-      switch (state.style.fillRule)
-      {
-         case EvenOdd:
-            return Path.FillType.EVEN_ODD;
-         case NonZero:
-         default:
-            return Path.FillType.WINDING;
-      }
    }
 
 
@@ -2754,7 +2765,8 @@ class SVGAndroidRenderer
 
    private class MarkerVector
    {
-      float x, y, dx=0f, dy=0f;
+      float    x, y, dx=0f, dy=0f;
+      boolean  isAmbiguous = false;
 
       MarkerVector(float x, float y, float dx, float dy)
       {
@@ -2777,16 +2789,35 @@ class SVGAndroidRenderer
          float dy = (y - this.y);
          double  len = Math.sqrt( dx*dx + dy*dy );
          if (len != 0) {
-            this.dx += (float) (dx / len);
-            this.dy += (float) (dy / len);
+            dx = (float) (dx / len);
+            dy = (float) (dy / len);
+         }
+         // Check for degenerate result where the two unit vectors cancelled each other out
+         if (dx == -this.dx && dy == -this.dy) {
+            this.isAmbiguous = true;
+            // Choose one of the perpendiculars now. We will get a chance to switch it later.
+            this.dx = -dy;
+            this.dy = dx;
+         } else {
+            this.dx += dx;
+            this.dy += dy;
          }
       }
 
       void add(MarkerVector v2)
       {
-         this.dx += v2.dx;
-         this.dy += v2.dy;
+         // Check for degenerate result where the two unit vectors cancelled each other out
+         if (v2.dx == -this.dx && v2.dy == -this.dy) {
+            this.isAmbiguous = true;
+            // Choose one of the perpendiculars now. We will get a chance to switch it later.
+            this.dx = -v2.dy;
+            this.dy = v2.dx;
+         } else {
+            this.dx += v2.dx;
+            this.dy += v2.dy;
+         }
       }
+
 
       @Override
       public String toString()
@@ -2966,15 +2997,60 @@ class SVGAndroidRenderer
       if (_markerStart != null)
          renderMarker(_markerStart, markers.get(0));
 
-      if (_markerMid != null)
+      if (_markerMid != null && markers.size() > 2)
       {
-         for (int i=1; i<(markerCount-1); i++) {
-            renderMarker(_markerMid, markers.get(i));
+         MarkerVector  lastPos = markers.get(0);
+         MarkerVector  thisPos = markers.get(1);
+
+         for (int i=1; i<(markerCount-1); i++)
+         {
+            MarkerVector  nextPos = markers.get(i + 1);
+            if (thisPos.isAmbiguous)
+               thisPos = realignMarkerMid(lastPos, thisPos, nextPos);
+            renderMarker(_markerMid, thisPos);
+            lastPos = thisPos;
+            thisPos = nextPos;
          }
       }
 
       if (_markerEnd != null)
-         renderMarker(_markerEnd, markers.get(markerCount-1));
+         renderMarker(_markerEnd, markers.get(markerCount - 1));
+   }
+
+
+   /*
+    * This was one of the ambiguous markers. Try to see if we can find a better direction for
+    * it, now that we have more info available on the neighbouring marker positions.
+    */
+   private MarkerVector  realignMarkerMid(MarkerVector lastPos, MarkerVector thisPos, MarkerVector nextPos)
+   {
+      // Check the temporary marker vector against the incoming vector
+      float  dot = dotProduct(thisPos.dx, thisPos.dy, (thisPos.x - lastPos.x), (thisPos.y - lastPos.y));
+      if (dot == 0f) {
+         // Those two were perpendicular, so instead try the outgoing vector
+         dot = dotProduct(thisPos.dx, thisPos.dy, (nextPos.x - thisPos.x), (nextPos.y - thisPos.y));
+      }
+      if (dot > 0)
+         return thisPos;
+      if (dot == 0f) {
+         // If that was perpendicular also, then give up.
+         // Else use the one that points in the same direction as 0deg (1,0) or has non-negative y.
+         if (thisPos.dx > 0f || thisPos.dy >= 0)
+            return thisPos;
+      }
+      // Reverse this vector and point the marker in the opposite direction.
+      thisPos.dx = -thisPos.dx;
+      thisPos.dy = -thisPos.dy;
+      return thisPos;
+   }
+
+
+   /*
+    * Calculate the dot product of two vectors.
+    */
+   private float  dotProduct(float x1, float y1, float x2, float y2)
+   {
+      return x1 * x2 + y1 * y2;
    }
 
 
@@ -3031,7 +3107,7 @@ class SVGAndroidRenderer
          PreserveAspectRatio  positioning = (marker.preserveAspectRatio != null) ? marker.preserveAspectRatio :  PreserveAspectRatio.LETTERBOX;
          if (!positioning.equals(PreserveAspectRatio.STRETCH))
          {
-            float  aspectScale = (positioning.getScale() == PreserveAspectRatio.Scale.Slice) ? Math.max(xScale,  yScale) : Math.min(xScale,  yScale);
+            float  aspectScale = (positioning.getScale() == PreserveAspectRatio.Scale.slice) ? Math.max(xScale,  yScale) : Math.min(xScale,  yScale);
             xScale = yScale = aspectScale;
          }
 
@@ -3047,14 +3123,14 @@ class SVGAndroidRenderer
          float  yOffset = 0f;
          switch (positioning.getAlignment())
          {
-            case XMidYMin:
-            case XMidYMid:
-            case XMidYMax:
+            case xMidYMin:
+            case xMidYMid:
+            case xMidYMax:
                xOffset -= (_markerWidth - imageW) / 2;
                break;
-            case XMaxYMin:
-            case XMaxYMid:
-            case XMaxYMax:
+            case xMaxYMin:
+            case xMaxYMid:
+            case xMaxYMax:
                xOffset -= (_markerWidth - imageW);
                break;
             default:
@@ -3064,14 +3140,14 @@ class SVGAndroidRenderer
          // Determine final Y position
          switch (positioning.getAlignment())
          {
-            case XMinYMid:
-            case XMidYMid:
-            case XMaxYMid:
+            case xMinYMid:
+            case xMidYMid:
+            case xMaxYMid:
                yOffset -= (_markerHeight - imageH) / 2;
                break;
-            case XMinYMax:
-            case XMidYMax:
-            case XMaxYMax:
+            case xMinYMax:
+            case xMidYMax:
+            case xMaxYMax:
                yOffset -= (_markerHeight - imageH);
                break;
             default:
@@ -3144,9 +3220,6 @@ class SVGAndroidRenderer
       newState.viewBox = state.viewBox;
       newState.viewPort = state.viewPort;
 
-      // Set the directRendering mode based on what the current state has set
-      newState.directRendering = state.directRendering;
-
       return newState;
    }
 
@@ -3193,9 +3266,9 @@ class SVGAndroidRenderer
       }
       if (ref instanceof SvgLinearGradient)
          makeLinearGradient(isFill, boundingBox, (SvgLinearGradient) ref);
-      if (ref instanceof SvgRadialGradient)
+      else if (ref instanceof SvgRadialGradient)
          makeRadialGradient(isFill, boundingBox, (SvgRadialGradient) ref);
-      if (ref instanceof SolidColor)
+      else if (ref instanceof SolidColor)
          setSolidColor(isFill, (SolidColor) ref);
       //if (ref instanceof SVG.Pattern) {}  // May be needed later if/when we do direct rendering
    }
@@ -3305,9 +3378,10 @@ class SVGAndroidRenderer
       statePop();
 
       // Create shader instance
-      LinearGradient  gr = new LinearGradient(_x1, _y1, _x2, _y2, colours, positions, tileMode); 
+      LinearGradient  gr = new LinearGradient(_x1, _y1, _x2, _y2, colours, positions, tileMode);
       gr.setLocalMatrix(m);
       paint.setShader(gr);
+      paint.setAlpha(clamp255(state.style.fillOpacity));
    }
 
 
@@ -3418,6 +3492,7 @@ class SVGAndroidRenderer
       RadialGradient  gr = new RadialGradient(_cx, _cy, _r, colours, positions, tileMode); 
       gr.setLocalMatrix(m);
       paint.setShader(gr);
+      paint.setAlpha(clamp255(state.style.fillOpacity));
    }
 
 
@@ -3560,14 +3635,217 @@ class SVGAndroidRenderer
       if (state.style.clipPath == null)
          return;
 
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT)
+      {
+         // KitKat introduced Path.Op which allows us to do boolean operations on Paths
+         Path  combinedPath = calculateClipPath(obj, boundingBox);
+         if (combinedPath != null)
+           canvas.clipPath(combinedPath);
+      }
+      else
+      {
+         checkForClipPath_OldStyle(obj, boundingBox);
+      }
+   }
+
+
+   //-----------------------------------------------------------------------------------------------
+   // New-style clippath handling (KitKat onwards).
+   // Used Path.op(Path, Path.Op) methods.
+   //
+
+   @TargetApi(Build.VERSION_CODES.KITKAT)
+   private Path  calculateClipPath(SvgElement obj, Box boundingBox)
+   {
       // Locate the referenced object
       SVG.SvgObject  ref = obj.document.resolveIRI(state.style.clipPath);
+      if (ref == null) {
+         error("ClipPath reference '%s' not found", state.style.clipPath);
+         return null;
+      }
+
+      ClipPath  clipPath = (ClipPath) ref;
+
+      // Save style state
+      stateStack.push(state);
+
+      // "Properties inherit into the <clipPath> element from its ancestors; properties do not
+      // inherit from the element referencing the <clipPath> element." (sect 14.3.5)
+      state = findInheritFromAncestorState(clipPath);
+
+      boolean  userUnits = (clipPath.clipPathUnitsAreUser == null || clipPath.clipPathUnitsAreUser);
+      Matrix   m = new Matrix();
+      if (!userUnits)
+      {
+         m.preTranslate(boundingBox.minX, boundingBox.minY);
+         m.preScale(boundingBox.width, boundingBox.height);
+      }
+      if (clipPath.transform != null)
+      {
+         m.preConcat(clipPath.transform);
+      }
+
+      Path  combinedPath = new Path();
+      for (SvgObject child: clipPath.children)
+      {
+         if (!(child instanceof SvgElement))
+            continue;
+         Path part = objectToPath((SvgElement) child, true);
+         if (part != null)
+            combinedPath.op(part, Path.Op.UNION);
+      }
+
+      // Does the clippath also have a clippath?
+      if (state.style.clipPath != null)
+      {
+         if (clipPath.boundingBox == null)
+            clipPath.boundingBox = calculatePathBounds(combinedPath);
+         Path clipClipPath = calculateClipPath(clipPath, clipPath.boundingBox);
+         if (clipClipPath != null)
+            combinedPath.op(clipClipPath, Path.Op.INTERSECT);
+      }
+
+      combinedPath.transform(m);
+
+      // Restore style state
+      state = stateStack.pop();
+
+      return combinedPath;
+   }
+
+
+   /*
+    * Convert the clipPath child element to a path. Transformed if need be, and clipped also if it has its own clippath.
+    */
+   @TargetApi(Build.VERSION_CODES.KITKAT)
+   private Path objectToPath(SvgElement obj, boolean allowUse)
+   {
+      // Save style state
+      stateStack.push(state);
+      state = new RendererState(state);
+
+      updateStyleForElement(state, obj);
+
+      if (!display() || !visible()) {
+         state = stateStack.pop();
+         return null;
+      }
+
+      Path  path = null;
+
+      if (obj instanceof SVG.Use)
+      {
+         if (!allowUse) {
+            error("<use> elements inside a <clipPath> cannot reference another <use>");
+         }
+
+         // Locate the referenced object
+         SVG.Use  useElement = (SVG.Use) obj;
+         SVG.SvgObject  ref = obj.document.resolveIRI(useElement.href);
+         if (ref == null) {
+            error("Use reference '%s' not found", useElement.href);
+            state = stateStack.pop();
+            return null;
+         }
+         if (!(ref instanceof SvgElement)) {
+            state = stateStack.pop();
+            return null;
+         }
+
+         path = objectToPath((SvgElement) ref, false);
+         if (path == null)
+            return null;
+
+         if (useElement.boundingBox == null) {
+            useElement.boundingBox = calculatePathBounds(path);
+         }
+
+         if (useElement.transform != null)
+            path.transform(useElement.transform);
+      }
+      else if (obj instanceof SVG.GraphicsElement)
+      {
+         SVG.GraphicsElement  elem = (SVG.GraphicsElement) obj;
+
+         if (obj instanceof SVG.Path)
+         {
+            SVG.Path  pathElem = (SVG.Path) obj;
+            path = (new PathConverter(pathElem.d)).getPath();
+            if (obj.boundingBox == null)
+               obj.boundingBox = calculatePathBounds(path);
+         }
+         else if (obj instanceof SVG.Rect)
+            path = makePathAndBoundingBox((SVG.Rect) obj);
+         else if (obj instanceof SVG.Circle)
+            path = makePathAndBoundingBox((SVG.Circle) obj);
+         else if (obj instanceof SVG.Ellipse)
+            path = makePathAndBoundingBox((SVG.Ellipse) obj);
+         else if (obj instanceof SVG.PolyLine)
+            path = makePathAndBoundingBox((SVG.PolyLine) obj);
+
+         if (path == null)
+            return null;
+
+         if (elem.boundingBox == null) {
+            elem.boundingBox = calculatePathBounds(path);
+         }
+
+         if (elem.transform != null)
+            path.transform(elem.transform);
+
+         path.setFillType(getClipRuleFromState());
+      }
+      else if (obj instanceof SVG.Text)
+      {
+         SVG.Text  textElem = (SVG.Text) obj;
+         path = makePathAndBoundingBox(textElem);
+
+         if (path == null)
+            return null;
+
+         if (textElem.transform != null)
+            path.transform(textElem.transform);
+
+         path.setFillType(getClipRuleFromState());
+      }
+      else {
+         error("Invalid %s element found in clipPath definition", obj.getClass().getSimpleName());
+         return null;
+      }
+
+      // Does the clippath child element also have a clippath?
+      if (state.style.clipPath != null)
+      {
+         Path  childsClipPath = calculateClipPath(obj, obj.boundingBox);
+         if (childsClipPath != null)
+            path.op(childsClipPath, Path.Op.INTERSECT);
+      }
+
+      // Restore style state
+      state = stateStack.pop();
+
+      return path;
+   }
+
+
+
+   //-----------------------------------------------------------------------------------------------
+   // Old-style clippath handling.
+   // Pre-KitKat. Kept for backwards compatibility.
+
+
+   private void checkForClipPath_OldStyle(SvgElement obj, Box boundingBox)
+   {
+      // Use the old/original method for clip paths
+
+      // Locate the referenced object
+      SvgObject  ref = obj.document.resolveIRI(state.style.clipPath);
       if (ref == null) {
          error("ClipPath reference '%s' not found", state.style.clipPath);
          return;
       }
 
-      ClipPath  clipPath = (ClipPath) ref;
+      ClipPath clipPath = (ClipPath) ref;
 
       // An empty clipping path will completely clip away the element (sect 14.3.5).
       if (clipPath.children.isEmpty()) {
@@ -3602,7 +3880,7 @@ class SVGAndroidRenderer
 
       checkForClipPath(clipPath);
 
-      Path  combinedPath = new Path();
+      Path combinedPath = new Path();
       for (SvgObject child: clipPath.children)
       {
          addObjectToClip(child, true, combinedPath, new Matrix());
@@ -3645,6 +3923,7 @@ class SVGAndroidRenderer
    // The clip state push and pop methods only save the matrix.
    // The normal push/pop save the clip region also which would
    // destroy the clip region we are trying to build.
+   @SuppressLint("WrongConstant")  // MATRIX_SAVE_FLAG is deprecated and being flagged as an error by Android Studio
    private void  clipStatePush()
    {
       // Save matrix and clip
@@ -3666,16 +3945,10 @@ class SVGAndroidRenderer
 
    private Path.FillType  getClipRuleFromState()
    {
-      if (state.style.clipRule == null)
+      if (state.style.clipRule != null && state.style.clipRule == Style.FillRule.EvenOdd)
+         return Path.FillType.EVEN_ODD;
+      else
          return Path.FillType.WINDING;
-      switch (state.style.clipRule)
-      {
-         case EvenOdd:
-            return Path.FillType.EVEN_ODD;
-         case NonZero:
-         default:
-            return Path.FillType.WINDING;
-      }
    }
 
 
@@ -3730,7 +4003,7 @@ class SVGAndroidRenderer
 
       checkForClipPath(obj);
 
-      combinedPath.setFillType(path.getFillType());
+      combinedPath.setFillType(getClipRuleFromState());
       combinedPath.addPath(path, combinedPathMatrix);
    }
 
@@ -3799,6 +4072,9 @@ class SVGAndroidRenderer
       combinedPath.setFillType(getClipRuleFromState());
       combinedPath.addPath(textAsPath, combinedPathMatrix);
    }
+
+
+   //-----------------------------------------------------------------------------------------------
 
 
    private class  PlainTextToPath extends TextProcessor
@@ -3999,10 +4275,40 @@ class SVGAndroidRenderer
       if (obj.boundingBox == null) {
          obj.boundingBox = calculatePathBounds(path);
       }
-
-      path.setFillType(getClipRuleFromState());
       return path;
    }
+
+
+   private Path makePathAndBoundingBox(SVG.Text obj)
+   {
+      // Get the first coordinate pair from the lists in the x and y properties.
+      float  x = (obj.x == null || obj.x.size() == 0) ? 0f : obj.x.get(0).floatValueX(this);
+      float  y = (obj.y == null || obj.y.size() == 0) ? 0f : obj.y.get(0).floatValueY(this);
+      float  dx = (obj.dx == null || obj.dx.size() == 0) ? 0f : obj.dx.get(0).floatValueX(this);
+      float  dy = (obj.dy == null || obj.dy.size() == 0) ? 0f : obj.dy.get(0).floatValueY(this);
+
+      // Handle text alignment
+      if (state.style.textAnchor != Style.TextAnchor.Start) {
+         float  textWidth = calculateTextWidth(obj);
+         if (state.style.textAnchor == Style.TextAnchor.Middle) {
+            x -= (textWidth / 2);
+         } else {
+            x -= textWidth;  // 'End' (right justify)
+         }
+      }
+
+      if (obj.boundingBox == null) {
+         TextBoundsCalculator  proc = new TextBoundsCalculator(x, y);
+         enumerateTextSpans(obj, proc);
+         obj.boundingBox = new Box(proc.bbox.left, proc.bbox.top, proc.bbox.width(), proc.bbox.height());
+      }
+
+      Path  textAsPath = new Path();
+      enumerateTextSpans(obj, new PlainTextToPath(x + dx, y + dy, textAsPath));
+
+      return textAsPath;
+   }
+
 
 
    //==============================================================================
@@ -4057,6 +4363,8 @@ class SVGAndroidRenderer
       RendererState  baseState = new RendererState();
       updateStyle(baseState, Style.getDefaultStyle());
       baseState.style.overflow = false;    // By default patterns do not overflow
+
+      // SVG2 TODO: Patterns now inherit from the element referencing the pattern
       state = findInheritFromAncestorState(pattern, baseState);
 
       // The bounds of the area we need to cover with pattern to ensure that our shape is filled
@@ -4086,21 +4394,28 @@ class SVGAndroidRenderer
             patternArea = new Box(rect.left, rect.top, rect.right-rect.left, rect.bottom-rect.top);
          }
       }
+
       // Calculate the pattern origin
       originX = x + (float) Math.floor((patternArea.minX - x) / w) * w;
       originY = y + (float) Math.floor((patternArea.minY - y) / h) * h;
+
       // For each Y step, then each X step
       float  right = patternArea.maxX();
       float  bottom = patternArea.maxY();
       Box    stepViewBox = new Box(0,0,w,h);
+
+      boolean  compositing = pushLayer();
+
       for (float stepY = originY; stepY < bottom; stepY += h)
       {
          for (float stepX = originX; stepX < right; stepX += w)
          {
             stepViewBox.minX = stepX;
             stepViewBox.minY = stepY;
+
             // Push the state
             statePush();
+
             // Set pattern clip rectangle if appropriate
             if (!state.style.overflow) {
                setClipRect(stepViewBox.minX, stepViewBox.minY, stepViewBox.width, stepViewBox.height);
@@ -4120,20 +4435,20 @@ class SVGAndroidRenderer
                }
             }
 
-            boolean  compositing = pushLayer();
 
             // Render the pattern
             for (SVG.SvgObject child: pattern.children) {
                render(child);
             }
 
-            if (compositing)
-               popLayer(pattern);
-
             // Pop the state
             statePop();
          }
       }
+
+      if (compositing)
+         popLayer(pattern);
+
       // Pop the state
       statePop();
    }
@@ -4232,7 +4547,7 @@ class SVGAndroidRenderer
       statePush();
 
       state = findInheritFromAncestorState(mask);
-      // Set the style for the pattern (inherits from its own ancestors, not from callee's state)
+      // Set the style for the mask (inherits from its own ancestors, not from callee's state)
       // The 'opacity', 'filter' and 'display' properties do not apply to the 'mask' element" (sect 14.4)
       // Next line is not actually needed since we aren't calling pushLayer() here. Kept for future reference.
       state.style.opacity = 1f;

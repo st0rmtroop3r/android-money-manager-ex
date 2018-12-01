@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2017 The Android Money Manager Ex Project Team
+ * Copyright (C) 2012-2018 The Android Money Manager Ex Project Team
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -81,15 +81,23 @@ public class RecurringTransactionListActivity
             case INTENT_REQUEST_PASSCODE:
                 boolean isAuthenticated = false;
                 if (resultCode == RESULT_OK && data != null) {
-                    Passcode passcode = new Passcode(getApplicationContext());
+
                     String passIntent = data.getStringExtra(PasscodeActivity.INTENT_RESULT_PASSCODE);
-                    String passDb = passcode.getPasscode();
-                    if (passIntent != null && passDb != null) {
-                        isAuthenticated = passIntent.equals(passDb);
-                        if (!isAuthenticated) {
-                            Toast.makeText(getApplicationContext(), R.string.passocde_no_macth, Toast.LENGTH_LONG).show();
+                    if (!passIntent.equals("FingerprintAuthenticationSuccess")) {
+                        Passcode passcode = new Passcode(getApplicationContext());
+                        String passDb = passcode.getPasscode();
+
+                        if (passIntent != null && passDb != null) {
+                            isAuthenticated = passIntent.equals(passDb);
+                            if (!isAuthenticated) {
+                                Toast.makeText(getApplicationContext(), R.string.passocde_no_macth, Toast.LENGTH_LONG).show();
+                            }
                         }
                     }
+                    else {
+                        isAuthenticated = true;
+                    }
+
                 }
                 // close if not authenticated
                 if (!isAuthenticated) {
